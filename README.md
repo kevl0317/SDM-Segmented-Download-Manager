@@ -22,6 +22,9 @@ desktop GUI and a headless CLI.
   speed/ETA, right-click menu, and clipboard URL capture
 - **Clipboard monitoring** — optionally offer to download a link the moment you
   copy it (opt-in; filters to downloadable file types by default)
+- **Runs in the system tray** — closing the window keeps SDM running in the
+  background (downloads and clipboard monitoring stay alive); reopen or quit from
+  the tray icon (Windows)
 - **Headless CLI** with a text progress bar
 - **Single-file packaging** — a `.pyz` zipapp, or a standalone Windows `.exe`
 - **Zero third-party dependencies**
@@ -56,7 +59,7 @@ page — a per-user install (no admin) with a Start-Menu shortcut and an uninsta
 ```bash
 python build.py        # -> dist/sdm.pyz   (stdlib zipapp, no dependencies)
 build_exe.bat          # -> dist/SDM.exe   (Windows standalone, via PyInstaller)
-iscc SDM.iss           # -> dist/SDM-Setup-1.1.1.exe  (Windows installer, via Inno Setup)
+iscc SDM.iss           # -> dist/SDM-Setup-1.2.0.exe  (Windows installer, via Inno Setup)
 ```
 
 ## How it works
@@ -86,6 +89,8 @@ and is not affiliated with any commercial download manager.
 | `sdm/engine.py` | download engine — probe, segmentation, work-stealing, resume |
 | `sdm/manager.py` | job list + queue persistence |
 | `sdm/gui.py` | DPI-aware Tkinter GUI |
+| `sdm/clipboard.py` | event-driven clipboard link monitor |
+| `sdm/tray.py` | Windows system-tray icon (run in background) |
 | `sdm/cli.py` | headless CLI |
 | `sdm/__main__.py` | entry point (GUI by default, CLI when given a URL) |
 | `build.py`, `run_app.py`, `build_exe.bat`, `SDM.iss`, `SDM.bat` | packaging, installer & launchers |

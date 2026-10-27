@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -18,6 +19,7 @@ from .cli import human_bytes, human_time
 from .clipboard import ClipboardMonitor
 from .engine import Download, Status
 from .manager import Manager, config_dir
+from .tray import SystemTray, TRAY_AVAILABLE
 
 REFRESH_MS = 400
 FONT_FAMILY = "Segoe UI" if sys.platform == "win32" else "TkDefaultFont"
@@ -301,6 +303,14 @@ class App(ttk.Frame):
         self.mon_var = tk.BooleanVar(value=bool(self.settings.get("clipboard_monitor", True)))
         self.all_var = tk.BooleanVar(value=bool(self.settings.get("clipboard_all", False)))
         self.clip = ClipboardMonitor(self, self._on_clip_url, monitor_all=self.all_var.get())
+        self.tray_var = tk.BooleanVar(value=bool(self.settings.get("close_to_tray", True)))
+        self._tray_open_evt = threading.Event()
+        self._tray_quit_evt = threading.Event()
+        self._tray_after_id = None
+        self._topmost_after = None
+        self.tray = (SystemTray("SDM - Segmented Download Manager",
+                                on_open=self._tray_open_evt.set, on_quit=self._tray_quit_evt.set)
+                     if TRAY_AVAILABLE else None)
 
         self._build_toolbar()
         self._build_tree()
@@ -315,15 +325,25 @@ class App(ttk.Frame):
         self._after_id = self.after(REFRESH_MS, self._refresh)
         if self.mon_var.get():
             self.clip.start()
+        if self.tray is not None and self.tray.start():
+            self._tray_after_id = self.after(150, self._tray_drain)
+        master.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
     def stop(self) -> None:
         self.clip.stop()
-        if self._after_id is not None:
+        if self.tray is not None:
             try:
-                self.after_cancel(self._after_id)
-            except tk.TclError:
+                self.tray.stop()
+            except Exception:   # noqa: BLE001
                 pass
-            self._after_id = None
+        for attr in ("_after_id", "_tray_after_id", "_topmost_after"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
 
     # ---- construction ----------------------------------------------------
     def _build_toolbar(self):
@@ -418,8 +438,11 @@ class App(ttk.Frame):
                               variable=self.mon_var, command=self._toggle_monitor)
         filem.add_checkbutton(label="Monitor all link types (not just files)",
                               variable=self.all_var, command=self._toggle_all)
+        if self.tray is not None:
+            filem.add_checkbutton(label="Keep running in the tray when closed",
+                                  variable=self.tray_var, command=self._toggle_close_to_tray)
         filem.add_separator()
-        filem.add_command(label="Exit", command=master.destroy)
+        filem.add_command(label="Exit", command=self._real_quit)
         menubar.add_cascade(label="File", menu=filem)
         helpm = tk.Menu(menubar, tearoff=0)
         helpm.add_command(label="About", command=self._about)
@@ -486,11 +509,7 @@ class App(ttk.Frame):
     def _on_clip_url(self, url):
         if self._dialog_open:
             return
-        try:
-            self.master.deiconify()
-            self.master.lift()
-        except tk.TclError:
-            pass
+        self._bring_to_front()
         self._open_add(url)
 
     def _toggle_monitor(self):
@@ -503,6 +522,61 @@ class App(ttk.Frame):
         self.clip.monitor_all = self.all_var.get()
         self.settings["clipboard_all"] = self.all_var.get()
         save_settings(self.settings)
+
+    def _toggle_close_to_tray(self):
+        self.settings["close_to_tray"] = self.tray_var.get()
+        save_settings(self.settings)
+
+    def _bring_to_front(self):
+        """Force the window to the foreground (lift() alone can't on Windows)."""
+        w = self.master
+        try:
+            w.deiconify()
+            try:
+                w.state("normal")           # un-minimize if iconified
+            except tk.TclError:
+                pass
+            w.attributes("-topmost", True)  # topmost toggle = the reliable raise-above-others trick
+            w.lift()
+            w.focus_force()
+            self._topmost_after = w.after(400, self._drop_topmost)
+        except tk.TclError:
+            pass
+
+    def _drop_topmost(self):
+        try:
+            self.master.attributes("-topmost", False)
+        except tk.TclError:
+            pass
+
+    def _on_window_close(self):
+        """X / close: hide to the tray and keep running, if the tray is up."""
+        if self.tray is not None and self.tray.ok and self.tray_var.get():
+            try:
+                self.master.withdraw()
+                return
+            except tk.TclError:
+                pass
+        self._real_quit()
+
+    def _real_quit(self):
+        self.stop()
+        self.manager.pause_all()
+        self.manager.save_queue()
+        try:
+            self.master.destroy()
+        except tk.TclError:
+            pass
+
+    def _tray_drain(self):
+        """Act on tray clicks (flags set from the tray thread) on the Tk thread."""
+        if self._tray_quit_evt.is_set():
+            self._real_quit()
+            return
+        if self._tray_open_evt.is_set():
+            self._tray_open_evt.clear()
+            self._bring_to_front()
+        self._tray_after_id = self.after(150, self._tray_drain)
 
     def on_resume(self):
         d = self._selected()
@@ -661,15 +735,7 @@ def main(argv=None) -> int:
     root.geometry(f"{px(940)}x{px(600)}")
     root.minsize(px(720), px(460))
     apply_theme(root)
-    app = App(root, manager)
-
-    def on_close():
-        app.stop()
-        manager.pause_all()
-        manager.save_queue()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
+    app = App(root, manager)   # installs its own WM_DELETE_WINDOW handler (close-to-tray)
     root.mainloop()
     return 0
 

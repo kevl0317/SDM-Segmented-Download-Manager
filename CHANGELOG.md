@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.0 — 2026-10-27
+
+### Added
+- **System tray / run in background (Windows).** Closing the window now hides
+  SDM to the notification area instead of quitting, so downloads and clipboard
+  monitoring keep running. Double-click the tray icon to reopen; right-click for
+  Open / Quit. Toggle it under File → "Keep running in the tray when closed";
+  quit for real from File → Exit or the tray menu.
+
+### Fixed
+- **A caught clipboard link now brings the window to the front.** Previously the
+  Add dialog could open behind other windows; now SDM is raised to the
+  foreground (and restored from the tray) when it catches a link.
+
 ## v1.1.1 — 2026-10-27
 
 ### Changed

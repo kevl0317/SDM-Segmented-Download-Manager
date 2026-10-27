@@ -70,7 +70,8 @@ single stream (no resume).
 | `sdm/engine.py` | `Download` / `Segment` — probe, planning, work-stealing workers, resume, finalize |
 | `sdm/manager.py` | `Manager` — job list + queue persistence (`~/.sdm/queue.json`) |
 | `sdm/gui.py` | DPI-aware Tkinter UI: queue table, per-segment canvas, pause/resume/remove |
-| `sdm/clipboard.py` | optional clipboard link monitor (auto-popup when you copy a download URL) |
+| `sdm/clipboard.py` | event-driven clipboard link monitor (auto-popup when you copy a download URL) |
+| `sdm/tray.py` | Windows system-tray icon so SDM can run in the background after the window is closed |
 | `sdm/cli.py` | headless download with a text progress bar |
 | `sdm/__main__.py` | entry point (GUI by default, CLI when given a URL) |
 | `build.py` | builds `dist/sdm.pyz` (stdlib zipapp) |
