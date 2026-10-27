@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0 — unreleased
+## v1.1.0 — 2026-10-27
 
 ### Added
 - **Clipboard monitoring** — with it enabled (File → "Monitor clipboard for
@@ -8,6 +8,10 @@
   in. Filters to downloadable file types by default; "Monitor all link types"
   drops the filter. Links SDM itself copies are ignored, and it only runs when
   you turn it on.
+- **Windows installer** — `SDM-Setup` (built with Inno Setup) installs SDM
+  per-user with a Start-Menu shortcut, an optional desktop shortcut, and an
+  uninstaller — no admin required. The portable `SDM.exe` and the `sdm.pyz`
+  zipapp are still offered too.
 
 ## v1.0.0 — 2026-10-27
 

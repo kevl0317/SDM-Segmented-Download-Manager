@@ -47,13 +47,16 @@ python dist/sdm.pyz          # GUI, from the zipapp (any Python 3.9+ with Tkinte
 ```
 
 On Windows you can also run the standalone `SDM.exe` (needs no Python installed),
-or double-click `SDM.bat`, which builds and launches the app.
+or double-click `SDM.bat`, which builds and launches the app. Or install it with
+**`SDM-Setup.exe`** from the [Releases](https://github.com/kevl0317/SDM/releases)
+page — a per-user install (no admin) with a Start-Menu shortcut and an uninstaller.
 
 ## Build it yourself
 
 ```bash
 python build.py        # -> dist/sdm.pyz   (stdlib zipapp, no dependencies)
 build_exe.bat          # -> dist/SDM.exe   (Windows standalone, via PyInstaller)
+iscc SDM.iss           # -> dist/SDM-Setup-1.1.0.exe  (Windows installer, via Inno Setup)
 ```
 
 ## How it works
@@ -85,7 +88,7 @@ and is not affiliated with any commercial download manager.
 | `sdm/gui.py` | DPI-aware Tkinter GUI |
 | `sdm/cli.py` | headless CLI |
 | `sdm/__main__.py` | entry point (GUI by default, CLI when given a URL) |
-| `build.py`, `run_app.py`, `build_exe.bat`, `SDM.bat` | packaging & launchers |
+| `build.py`, `run_app.py`, `build_exe.bat`, `SDM.iss`, `SDM.bat` | packaging, installer & launchers |
 
 ## Contributing
 
