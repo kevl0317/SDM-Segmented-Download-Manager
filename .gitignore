@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Build outputs (ship these via GitHub Releases, not source control)
+build/
+dist/
+*.spec
+
+# App runtime files
+*.sdmdownload
+*.sdm
+
+# Local, private notes — never part of the public project
+/notes/
+*.local.md
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
