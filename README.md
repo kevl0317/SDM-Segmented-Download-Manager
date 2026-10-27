@@ -34,8 +34,8 @@ desktop GUI and a headless CLI.
 Requires Python 3.9+ with Tkinter (standard on python.org and conda builds).
 
 ```bash
-git clone https://github.com/kevl0317/SDM.git
-cd SDM
+git clone https://github.com/kevl0317/SDM-Segmented-Download-Manager.git
+cd SDM-Segmented-Download-Manager
 
 python -m sdm                                   # desktop GUI
 python -m sdm "https://example.com/big.iso" -n 8    # CLI, 8 connections
@@ -51,7 +51,7 @@ python dist/sdm.pyz          # GUI, from the zipapp (any Python 3.9+ with Tkinte
 
 On Windows you can also run the standalone `SDM.exe` (needs no Python installed),
 or double-click `SDM.bat`, which builds and launches the app. Or install it with
-**`SDM-Setup.exe`** from the [Releases](https://github.com/kevl0317/SDM/releases)
+**`SDM-Setup.exe`** from the [Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
 page — a per-user install (no admin) with a Start-Menu shortcut and an uninstaller.
 
 ## Build it yourself

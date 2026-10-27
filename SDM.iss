@@ -5,7 +5,7 @@
 #define MyAppName "SDM"
 #define MyAppVersion "1.2.1"
 #define MyAppPublisher "Kevin Liu"
-#define MyAppURL "https://github.com/kevl0317/SDM"
+#define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
 
 [Setup]
