@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.1 — 2026-10-27
+
+### Changed
+- **Clipboard monitoring is now event-driven on Windows.** Instead of polling,
+  a message-only window subscribes with `AddClipboardFormatListener`, so Windows
+  notifies SDM the instant the clipboard changes and the clipboard is read only
+  on a real change (the modern equivalent of the clipboard-viewer chain). Falls
+  back to a light poll on non-Windows or if the listener can't be set up.
+
 ## v1.1.0 — 2026-10-27
 
 ### Added

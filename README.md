@@ -56,7 +56,7 @@ page — a per-user install (no admin) with a Start-Menu shortcut and an uninsta
 ```bash
 python build.py        # -> dist/sdm.pyz   (stdlib zipapp, no dependencies)
 build_exe.bat          # -> dist/SDM.exe   (Windows standalone, via PyInstaller)
-iscc SDM.iss           # -> dist/SDM-Setup-1.1.0.exe  (Windows installer, via Inno Setup)
+iscc SDM.iss           # -> dist/SDM-Setup-1.1.1.exe  (Windows installer, via Inno Setup)
 ```
 
 ## How it works

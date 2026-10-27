@@ -7,6 +7,6 @@ from .clipboard import ClipboardMonitor, extract_download_url
 from .engine import Download, Segment, Status
 from .manager import Manager, default_download_dir
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __all__ = ["Download", "Segment", "Status", "Manager", "default_download_dir",
            "ClipboardMonitor", "extract_download_url"]
