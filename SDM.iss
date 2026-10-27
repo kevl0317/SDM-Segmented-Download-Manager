@@ -3,7 +3,7 @@
 ; with a Start-Menu shortcut, optional desktop shortcut, and an uninstaller.
 
 #define MyAppName "SDM"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.2.1"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM"
 #define MyAppExeName "SDM.exe"

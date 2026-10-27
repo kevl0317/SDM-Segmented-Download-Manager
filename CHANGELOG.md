@@ -1,12 +1,16 @@
 # Changelog
 
-## Unreleased
+## v1.2.1 — 2026-10-27
 
 ### Changed
 - **Caught-link popup is standalone now (like IDM).** Copying a download link
   shows only a small popup on top of everything; the main window stays where it
   is (even hidden in the tray). The full GUI comes to the front only after you
   click Download.
+
+### Fixed
+- **Installer shows "SDM" in Add/Remove Programs** (not "SDM 1.2.0") — the
+  version stays in its own column.
 
 ## v1.2.0 — 2026-10-27
 
