@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.0 — unreleased
+
+### Added
+- **Clipboard monitoring** — with it enabled (File → "Monitor clipboard for
+  links"), copying a download link pops up the Add dialog with the URL filled
+  in. Filters to downloadable file types by default; "Monitor all link types"
+  drops the filter. Links SDM itself copies are ignored, and it only runs when
+  you turn it on.
+
 ## v1.0.0 — 2026-10-27
 
 First public release.

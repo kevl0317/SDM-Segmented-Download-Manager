@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .cli import human_bytes, human_time
+from .clipboard import ClipboardMonitor
 from .engine import Download, Status
 from .manager import Manager, config_dir
 
@@ -296,6 +297,10 @@ class App(ttk.Frame):
         self.rowconfigure(1, weight=1)
         self.columnconfigure(0, weight=1)
         self._rows: dict[str, Download] = {}
+        self._dialog_open = False
+        self.mon_var = tk.BooleanVar(value=bool(self.settings.get("clipboard_monitor", True)))
+        self.all_var = tk.BooleanVar(value=bool(self.settings.get("clipboard_all", False)))
+        self.clip = ClipboardMonitor(self, self._on_clip_url, monitor_all=self.all_var.get())
 
         self._build_toolbar()
         self._build_tree()
@@ -308,8 +313,11 @@ class App(ttk.Frame):
             self._add_row(d)
         self._update_actions()
         self._after_id = self.after(REFRESH_MS, self._refresh)
+        if self.mon_var.get():
+            self.clip.start()
 
     def stop(self) -> None:
+        self.clip.stop()
         if self._after_id is not None:
             try:
                 self.after_cancel(self._after_id)
@@ -406,6 +414,11 @@ class App(ttk.Frame):
         filem.add_command(label="Pause all", command=self.manager.pause_all)
         filem.add_command(label="Clear completed", command=self.on_clear_completed)
         filem.add_separator()
+        filem.add_checkbutton(label="Monitor clipboard for links",
+                              variable=self.mon_var, command=self._toggle_monitor)
+        filem.add_checkbutton(label="Monitor all link types (not just files)",
+                              variable=self.all_var, command=self._toggle_all)
+        filem.add_separator()
         filem.add_command(label="Exit", command=master.destroy)
         menubar.add_cascade(label="File", menu=filem)
         helpm = tk.Menu(menubar, tearoff=0)
@@ -448,17 +461,48 @@ class App(ttk.Frame):
                 clip = c
         except tk.TclError:
             pass
-        dlg = AddDialog(self.master, self.settings.get("last_dir", self.manager.default_dir),
-                        int(self.settings.get("connections", 8)), clip)
-        self.wait_window(dlg)
-        if dlg.result:
-            self.settings["last_dir"] = dlg.result["dest_dir"] or self.manager.default_dir
-            self.settings["connections"] = dlg.result["connections"]
-            save_settings(self.settings)
-            d = self.manager.add(**dlg.result)
-            iid = self._add_row(d)
-            self.tree.selection_set(iid)
-            d.start()
+        self._open_add(clip)
+
+    def _open_add(self, prefill=""):
+        if self._dialog_open:
+            return
+        self._dialog_open = True
+        try:
+            dlg = AddDialog(self.master, self.settings.get("last_dir", self.manager.default_dir),
+                            int(self.settings.get("connections", 8)), prefill)
+            self.wait_window(dlg)
+            if dlg.result:
+                self.settings["last_dir"] = dlg.result["dest_dir"] or self.manager.default_dir
+                self.settings["connections"] = dlg.result["connections"]
+                save_settings(self.settings)
+                self.clip.ignore(dlg.result["url"])    # don't re-prompt for what we just added
+                d = self.manager.add(**dlg.result)
+                iid = self._add_row(d)
+                self.tree.selection_set(iid)
+                d.start()
+        finally:
+            self._dialog_open = False
+
+    def _on_clip_url(self, url):
+        if self._dialog_open:
+            return
+        try:
+            self.master.deiconify()
+            self.master.lift()
+        except tk.TclError:
+            pass
+        self._open_add(url)
+
+    def _toggle_monitor(self):
+        on = self.mon_var.get()
+        self.settings["clipboard_monitor"] = on
+        save_settings(self.settings)
+        self.clip.start() if on else self.clip.stop()
+
+    def _toggle_all(self):
+        self.clip.monitor_all = self.all_var.get()
+        self.settings["clipboard_all"] = self.all_var.get()
+        save_settings(self.settings)
 
     def on_resume(self):
         d = self._selected()
@@ -504,6 +548,7 @@ class App(ttk.Frame):
         if d:
             self.clipboard_clear()
             self.clipboard_append(d.url)
+            self.clip.ignore(d.url)
 
     def on_open(self):
         d = self._selected()
@@ -595,12 +640,14 @@ class App(ttk.Frame):
             self._update_details(sel)
         self._update_actions()
         self.manager.save_queue()
+        clip_hint = "   —   clipboard monitor on" if self.clip.enabled else ""
         if active:
             self.status_bar.config(
-                text=f"●  {active} active  —  {human_bytes(total_speed)}/s total")
+                text=f"●  {active} active  —  {human_bytes(total_speed)}/s total{clip_hint}")
         else:
             done = sum(1 for d in self._rows.values() if d.status is Status.COMPLETE)
-            self.status_bar.config(text=f"Ready  —  {len(self._rows)} in list, {done} complete")
+            self.status_bar.config(
+                text=f"Ready  —  {len(self._rows)} in list, {done} complete{clip_hint}")
         self._after_id = self.after(REFRESH_MS, self._refresh)
 
 

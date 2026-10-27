@@ -20,6 +20,8 @@ desktop GUI and a headless CLI.
   segment and helps finish it, so one slow route no longer drags out the tail
 - **DPI-aware Tkinter GUI** — download queue, a live per-segment progress view,
   speed/ETA, right-click menu, and clipboard URL capture
+- **Clipboard monitoring** — optionally offer to download a link the moment you
+  copy it (opt-in; filters to downloadable file types by default)
 - **Headless CLI** with a text progress bar
 - **Single-file packaging** — a `.pyz` zipapp, or a standalone Windows `.exe`
 - **Zero third-party dependencies**
