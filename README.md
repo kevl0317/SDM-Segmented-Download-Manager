@@ -29,8 +29,8 @@ desktop GUI and a headless CLI.
 Requires Python 3.9+ with Tkinter (standard on python.org and conda builds).
 
 ```bash
-git clone https://github.com/<you>/sdm.git
-cd sdm
+git clone https://github.com/kevl0317/SDM.git
+cd SDM
 
 python -m sdm                                   # desktop GUI
 python -m sdm "https://example.com/big.iso" -n 8    # CLI, 8 connections
