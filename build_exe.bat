@@ -6,6 +6,7 @@ set "PY=F:\miniconda\python.exe"
 if not exist "%PY%" set "PY=python"
 "%PY%" -m pip install --upgrade pyinstaller || goto :error
 "%PY%" -m PyInstaller --noconfirm --onefile --windowed --name SDM ^
+    --icon "%~dp0sdm.ico" --version-file "%~dp0version.txt" ^
     --collect-submodules sdm "%~dp0run_app.py"
 echo.
 echo Done. Standalone executable: dist\SDM.exe
