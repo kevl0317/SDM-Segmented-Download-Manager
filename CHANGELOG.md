@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Caught-link popup is standalone now (like IDM).** Copying a download link
+  shows only a small popup on top of everything; the main window stays where it
+  is (even hidden in the tray). The full GUI comes to the front only after you
+  click Download.
+
 ## v1.2.0 — 2026-10-27
 
 ### Added

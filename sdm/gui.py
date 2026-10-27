@@ -213,13 +213,20 @@ class SegmentBar(tk.Canvas):
 
 
 class AddDialog(tk.Toplevel):
-    def __init__(self, master, default_dir: str, default_conns: int, clipboard_url: str = ""):
+    def __init__(self, master, default_dir: str, default_conns: int, clipboard_url: str = "",
+                 standalone: bool = False):
         super().__init__(master)
-        self.title("Add download")
+        self.title("Download this link?" if standalone else "Add download")
         self.resizable(False, False)
         self.configure(bg=PALETTE["bg"])
         self.result = None
-        self.transient(master)
+        self._standalone = standalone
+        try:
+            master_visible = bool(master.winfo_viewable())
+        except tk.TclError:
+            master_visible = False
+        if not standalone or master_visible:
+            self.transient(master)   # skip when popping over a hidden (tray) main window
 
         frm = ttk.Frame(self, padding=px(16))
         frm.grid(sticky="nsew")
@@ -258,7 +265,16 @@ class AddDialog(tk.Toplevel):
         self.bind("<Return>", lambda e: self._ok())
         self.bind("<Escape>", lambda e: self.destroy())
         self.update_idletasks()
-        self._center(master)
+        if standalone:
+            self._center_screen()
+            try:
+                self.attributes("-topmost", True)   # the catch popup floats above everything
+                self.lift()
+            except tk.TclError:
+                pass
+            self.after(60, self.focus_force)
+        else:
+            self._center(master)
         self.grab_set()
 
     def _center(self, master):
@@ -266,6 +282,14 @@ class AddDialog(tk.Toplevel):
             x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
             y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
             self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except tk.TclError:
+            pass
+
+    def _center_screen(self):
+        try:
+            w, h = self.winfo_width(), self.winfo_height()
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            self.geometry(f"+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
         except tk.TclError:
             pass
 
@@ -486,19 +510,21 @@ class App(ttk.Frame):
             pass
         self._open_add(clip)
 
-    def _open_add(self, prefill=""):
+    def _open_add(self, prefill="", from_catch=False):
         if self._dialog_open:
             return
         self._dialog_open = True
         try:
             dlg = AddDialog(self.master, self.settings.get("last_dir", self.manager.default_dir),
-                            int(self.settings.get("connections", 8)), prefill)
+                            int(self.settings.get("connections", 8)), prefill, standalone=from_catch)
             self.wait_window(dlg)
             if dlg.result:
                 self.settings["last_dir"] = dlg.result["dest_dir"] or self.manager.default_dir
                 self.settings["connections"] = dlg.result["connections"]
                 save_settings(self.settings)
                 self.clip.ignore(dlg.result["url"])    # don't re-prompt for what we just added
+                if from_catch:
+                    self._bring_to_front()   # raise the GUI only now that the user chose Download
                 d = self.manager.add(**dlg.result)
                 iid = self._add_row(d)
                 self.tree.selection_set(iid)
@@ -509,8 +535,7 @@ class App(ttk.Frame):
     def _on_clip_url(self, url):
         if self._dialog_open:
             return
-        self._bring_to_front()
-        self._open_add(url)
+        self._open_add(url, from_catch=True)   # popup only; the GUI stays put until Download
 
     def _toggle_monitor(self):
         on = self.mon_var.get()
