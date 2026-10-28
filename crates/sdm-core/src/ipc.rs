@@ -1,6 +1,7 @@
 //! Token-guarded loopback IPC: the browser native-messaging host hands caught
 //! downloads to the already-running GUI over 127.0.0.1, authenticated by a
-//! per-run token, and a second launch of the GUI asks the first to show itself.
+//! per-run token; later launches of the GUI ask the first to show itself (or,
+//! for the uninstaller, to quit).
 //! No traffic interception — just a local hand-off socket.
 
 use std::hash::{BuildHasher, Hasher};
@@ -38,13 +39,23 @@ pub enum Request {
     Catch(CatchRequest),
     /// SDM was launched again: show the window instead of starting a second copy.
     Show,
+    /// Quit (the uninstaller needs SDM.exe free before it can remove it).
+    Quit,
+}
+
+/// A request that isn't a catch, from another launch of SDM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Op {
+    Show,
+    Quit,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Wire {
     token: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    show: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    op: Option<Op>,
     #[serde(flatten)]
     req: CatchRequest,
 }
@@ -124,12 +135,11 @@ pub async fn serve(tx: tokio::sync::mpsc::Sender<Request>) -> io::Result<()> {
             if wire.token != token {
                 return;
             }
-            let request = if wire.show {
-                Request::Show
-            } else if !wire.req.url.is_empty() {
-                Request::Catch(wire.req)
-            } else {
-                return;
+            let request = match wire.op {
+                Some(Op::Show) => Request::Show,
+                Some(Op::Quit) => Request::Quit,
+                None if !wire.req.url.is_empty() => Request::Catch(wire.req),
+                None => return,
             };
             let _ = tx.send(request).await;
             let _ = w.write_all(b"{\"ok\":true}\n").await;
@@ -140,24 +150,29 @@ pub async fn serve(tx: tokio::sync::mpsc::Sender<Request>) -> io::Result<()> {
 /// Client side: hand a caught download to the running GUI. Blocking; used by
 /// the host.
 pub fn forward(req: &CatchRequest) -> io::Result<()> {
-    send(false, req.clone())
+    send(None, req.clone())
 }
 
 /// Ask an already-running GUI to show its window. True when one answered — the
 /// caller is a second launch and should step aside.
 pub fn show_running() -> bool {
-    send(true, CatchRequest::default()).is_ok()
+    send(Some(Op::Show), CatchRequest::default()).is_ok()
+}
+
+/// Ask an already-running GUI to quit. True when one answered.
+pub fn quit_running() -> bool {
+    send(Some(Op::Quit), CatchRequest::default()).is_ok()
 }
 
 /// One request to the GUI that published the endpoint; Ok once it acknowledged
 /// (a stale endpoint, or another program now on that port, doesn't count).
-fn send(show: bool, req: CatchRequest) -> io::Result<()> {
+fn send(op: Option<Op>, req: CatchRequest) -> io::Result<()> {
     let (port, token) = read_endpoint()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SDM endpoint not published"))?;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut sock = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     sock.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let mut line = serde_json::to_string(&Wire { token, show, req })
+    let mut line = serde_json::to_string(&Wire { token, op, req })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     line.push('\n');
     sock.write_all(line.as_bytes())?;
@@ -178,28 +193,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wire_marks_show_requests_and_leaves_catches_unchanged() {
+    fn wire_marks_launch_requests_and_leaves_catches_unchanged() {
         let catch = Wire {
             token: "t".into(),
-            show: false,
+            op: None,
             req: CatchRequest {
                 url: "https://example.com/a.zip".into(),
                 ..Default::default()
             },
         };
         let json = serde_json::to_string(&catch).unwrap();
-        assert!(!json.contains("show"), "catches keep the original shape: {json}");
+        assert!(!json.contains("\"op\""), "catches keep the original shape: {json}");
         let back: Wire = serde_json::from_str(&json).unwrap();
-        assert!(!back.show);
+        assert_eq!(back.op, None);
         assert_eq!(back.req.url, "https://example.com/a.zip");
 
-        let show = Wire {
-            token: "t".into(),
-            show: true,
-            req: CatchRequest::default(),
-        };
-        let back: Wire = serde_json::from_str(&serde_json::to_string(&show).unwrap()).unwrap();
-        assert!(back.show);
-        assert!(back.req.url.is_empty());
+        for op in [Op::Show, Op::Quit] {
+            let wire = Wire {
+                token: "t".into(),
+                op: Some(op),
+                req: CatchRequest::default(),
+            };
+            let back: Wire = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+            assert_eq!(back.op, Some(op));
+            assert!(back.req.url.is_empty());
+        }
     }
 }

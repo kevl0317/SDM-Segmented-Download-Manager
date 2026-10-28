@@ -128,6 +128,11 @@ pub fn main() -> iced::Result {
         native_host::run();
         return Ok(());
     }
+    if has("--quit") {
+        // The uninstaller's first step: SDM.exe must be free before it can go.
+        quit_running_and_wait();
+        return Ok(());
+    }
     // The browser host starts us with --background to take a catch: stay in the
     // tray so only the "download this?" popup appears.
     let start_hidden = has("--background");
@@ -135,6 +140,13 @@ pub fn main() -> iced::Result {
     // shows its window and this one steps aside.
     if !start_hidden && hand_over_to_running() {
         return Ok(());
+    }
+    // Draw with Direct3D 12 on Windows: under Vulkan, some drivers' way of
+    // presenting (seen with NVIDIA) leaves the native menu bar see-through.
+    // An explicit WGPU_BACKEND still wins.
+    #[cfg(windows)]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        std::env::set_var("WGPU_BACKEND", "dx12");
     }
     iced::daemon(title, update, view)
         .subscription(subscription)
@@ -171,6 +183,7 @@ enum Message {
     KeyNew,
     TrayOpen,
     Relaunched,
+    QuitRequested,
     ExitNow,
     // runtime
     Tick,
@@ -188,6 +201,8 @@ struct Settings {
     show_completed: bool,
     always_on_top: bool,
     theme: ThemeMode,
+    /// Remove also deletes the downloaded file (off: it only leaves the list).
+    delete_file_on_remove: bool,
 }
 
 impl Default for Settings {
@@ -199,6 +214,7 @@ impl Default for Settings {
             show_completed: true,
             always_on_top: false,
             theme: ThemeMode::Dark,
+            delete_file_on_remove: false,
         }
     }
 }
@@ -211,15 +227,17 @@ enum Pref {
     CatchClipboard,
     CatchAll,
     KeepInTray,
+    DeleteOnRemove,
 }
 
 impl Pref {
-    const ALL: [Pref; 5] = [
+    const ALL: [Pref; 6] = [
         Pref::ShowCompleted,
         Pref::AlwaysOnTop,
         Pref::CatchClipboard,
         Pref::CatchAll,
         Pref::KeepInTray,
+        Pref::DeleteOnRemove,
     ];
 }
 
@@ -259,6 +277,7 @@ impl Settings {
             Pref::CatchClipboard => &mut self.clipboard_monitor,
             Pref::CatchAll => &mut self.clipboard_all,
             Pref::KeepInTray => &mut self.close_to_tray,
+            Pref::DeleteOnRemove => &mut self.delete_file_on_remove,
         }
     }
 }
@@ -310,6 +329,7 @@ struct MenuBar {
     catch_clipboard: CheckMenuItem,
     catch_all: CheckMenuItem,
     keep_in_tray: CheckMenuItem,
+    delete_on_remove: CheckMenuItem,
     about: MenuId,
     project: MenuId,
 }
@@ -322,6 +342,7 @@ impl MenuBar {
             Pref::CatchClipboard => &self.catch_clipboard,
             Pref::CatchAll => &self.catch_all,
             Pref::KeepInTray => &self.keep_in_tray,
+            Pref::DeleteOnRemove => &self.delete_on_remove,
         }
     }
 }
@@ -426,7 +447,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Remove => {
             if let Some(id) = app.selected {
                 if let Some(d) = app.manager.downloads.iter().find(|x| x.id() == id).cloned() {
-                    app.manager.remove(&d, false);
+                    app.manager.remove(&d, app.settings.delete_file_on_remove);
                     app.selected = None;
                 }
             }
@@ -529,6 +550,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::KeyNew => new_download(app),
         Message::TrayOpen | Message::Relaunched => show_main(app),
+        Message::QuitRequested => quit(app),
         Message::ExitNow => {
             app.tray = None; // remove the tray icon before the process goes away
             iced::exit()
@@ -692,6 +714,12 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
         s.close_to_tray,
         None,
     );
+    let delete_on_remove = CheckMenuItem::new(
+        "Remove also &deletes the file",
+        true,
+        s.delete_file_on_remove,
+        None,
+    );
     let about = MenuItem::new("&About SDM", true, None);
     let project = MenuItem::new("&Project page", true, None);
     let sep = PredefinedMenuItem::separator;
@@ -724,7 +752,13 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
         &Submenu::with_items(
             "&Options",
             true,
-            &[&catch_clipboard, &catch_all, &sep(), &keep_in_tray],
+            &[
+                &catch_clipboard,
+                &catch_all,
+                &sep(),
+                &keep_in_tray,
+                &delete_on_remove,
+            ],
         )
         .ok()?,
     )
@@ -747,6 +781,7 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
         catch_clipboard,
         catch_all,
         keep_in_tray,
+        delete_on_remove,
         about: about.id().clone(),
         project: project.id().clone(),
     })
@@ -809,7 +844,7 @@ fn open_popup(
         p.url = url;
         p.filename = filename;
         p.headers = headers;
-        return raise(p.id).chain(focus);
+        return pop_up(p.id).chain(focus);
     }
     let (id, opened) = window::open(popup_settings());
     app.popup = Some(Popup {
@@ -819,7 +854,18 @@ fn open_popup(
         headers,
     });
     let dark = app.dark();
-    opened.then(move |id| reveal(id, dark)).chain(focus)
+    opened
+        .then(move |id| reveal(id, dark).chain(pop_up(id)))
+        .chain(focus)
+}
+
+/// Put the popup in front of everything once, even when Windows won't hand us
+/// the focus, without pinning it there: whatever the user brings up next goes
+/// over it.
+fn pop_up(id: window::Id) -> Task<Message> {
+    window::change_level(id, window::Level::AlwaysOnTop)
+        .chain(window::change_level(id, window::Level::Normal))
+        .chain(raise(id))
 }
 
 fn close_popup(app: &mut App) -> Task<Message> {
@@ -836,7 +882,7 @@ fn open_about(app: &mut App) -> Task<Message> {
     let (id, opened) = window::open(about_settings());
     app.about = Some(id);
     let dark = app.dark();
-    opened.then(move |id| reveal(id, dark))
+    opened.then(move |id| reveal(id, dark).chain(raise(id)))
 }
 
 fn close_about(app: &mut App) -> Task<Message> {
@@ -877,9 +923,7 @@ fn level_for(on_top: bool) -> window::Level {
 /// Windows open hidden; theme the title bar first, then show, so there's no
 /// wrong-color flash.
 fn reveal(id: window::Id, dark: bool) -> Task<Message> {
-    frame(id, dark)
-        .chain(window::change_mode(id, window::Mode::Windowed))
-        .chain(raise(id))
+    frame(id, dark).chain(window::change_mode(id, window::Mode::Windowed))
 }
 
 fn frame(id: window::Id, dark: bool) -> Task<Message> {
@@ -934,6 +978,42 @@ fn hand_over_to_running() -> bool {
     sdm_core::ipc::show_running()
 }
 
+/// `--quit`: ask the running SDM to quit (it saves the queue and takes its tray
+/// icon down) and wait until it's gone, ending it if it doesn't go in time.
+fn quit_running_and_wait() {
+    let pid = sdm_core::ipc::read_pid();
+    if sdm_core::ipc::quit_running() {
+        if let Some(pid) = pid {
+            wait_for_exit(pid, Duration::from_secs(10));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_exit(pid: u32, timeout: Duration) {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE,
+    };
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid);
+        if process == 0 {
+            return;
+        }
+        if WaitForSingleObject(process, timeout.as_millis() as u32) == WAIT_TIMEOUT {
+            TerminateProcess(process, 1);
+            WaitForSingleObject(process, 2000);
+        }
+        CloseHandle(process);
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_for_exit(_pid: u32, timeout: Duration) {
+    std::thread::sleep(timeout.min(Duration::from_secs(1)));
+}
+
 fn main_settings() -> window::Settings {
     window::Settings {
         size: Size::new(760.0, 620.0),
@@ -951,6 +1031,7 @@ fn popup_settings() -> window::Settings {
         size: Size::new(520.0, 200.0),
         position: window::Position::Centered,
         resizable: false,
+        // Shown on top; pop_up then makes it an ordinary window.
         level: window::Level::AlwaysOnTop,
         visible: false,
         exit_on_close_request: false,
@@ -1133,6 +1214,7 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
             let msg = match req {
                 Request::Catch(req) => Message::Caught(req),
                 Request::Show => Message::Relaunched,
+                Request::Quit => Message::QuitRequested,
             };
             let _ = output.send(msg).await;
         }
@@ -1338,8 +1420,9 @@ fn main_view(app: &App) -> Element<'_, Message> {
         empty_state("Nothing in progress — completed downloads are hidden (View ▸ Show completed).")
     } else {
         let mut list = column![].spacing(8);
+        let deletes = app.settings.delete_file_on_remove;
         for d in visible {
-            list = list.push(download_item(app.selected == Some(d.id()), d));
+            list = list.push(download_item(app.selected == Some(d.id()), deletes, d));
         }
         scrollable(list)
             .direction(scrollable::Direction::Vertical(
@@ -1382,9 +1465,10 @@ fn empty_state(message: &'static str) -> Element<'static, Message> {
 }
 
 /// A slim row by default; the full card while downloading or when clicked.
-fn download_item(selected: bool, d: &Download) -> Element<'static, Message> {
+/// `deletes`: the Remove action also deletes the file (the button says so).
+fn download_item(selected: bool, deletes: bool, d: &Download) -> Element<'static, Message> {
     if selected || matches!(d.status(), Status::Running | Status::Probing) {
-        full_card(selected, d)
+        full_card(selected, deletes, d)
     } else {
         compact_row(d)
     }
@@ -1433,7 +1517,7 @@ fn compact_row(d: &Download) -> Element<'static, Message> {
     .into()
 }
 
-fn full_card(selected: bool, d: &Download) -> Element<'static, Message> {
+fn full_card(selected: bool, deletes: bool, d: &Download) -> Element<'static, Message> {
     let id = d.id();
     let status = d.status();
     let pct = d.progress();
@@ -1486,7 +1570,8 @@ fn full_card(selected: bool, d: &Download) -> Element<'static, Message> {
             Status::Complete => {}
         }
         meta_row = meta_row.push(ghost("Open", Message::OpenFolder));
-        meta_row = meta_row.push(ghost("Remove", Message::Remove));
+        let remove = if deletes { "Delete" } else { "Remove" };
+        meta_row = meta_row.push(ghost(remove, Message::Remove));
     }
 
     let card = container(column![name_row, bar, meta_row].spacing(11))
@@ -1548,15 +1633,18 @@ fn popup_view(p: &Popup) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Alignment::Center);
 
-    container(
-        column![
-            header,
-            text(middle_ellipsis(&p.url, 72)).size(12.0).style(text_muted),
-            name,
-            actions,
-        ]
-        .spacing(14),
+    // Always one line: a link wrapping onto a second line would push the
+    // buttons out of the fixed-size window.
+    let link = container(
+        text(middle_ellipsis(&readable_url(&p.url), 70))
+            .size(12.0)
+            .style(text_muted)
+            .wrapping(text::Wrapping::None),
     )
+    .width(Length::Fill)
+    .clip(true);
+
+    container(column![header, link, name, actions].spacing(14))
     .padding(20)
     .width(Length::Fill)
     .height(Length::Fill)
@@ -1601,15 +1689,43 @@ fn about_view() -> Element<'static, Message> {
         .into()
 }
 
+/// Shorten to about `max` narrow characters, keeping both ends. CJK and other
+/// wide characters count double, so mixed scripts fit the same width.
 fn middle_ellipsis(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
+    let width = |c: char| if is_wide(c) { 2 } else { 1 };
+    if s.chars().map(width).sum::<usize>() <= max {
         return s.to_string();
     }
-    let keep = (max - 1) / 2;
-    let head: String = s.chars().take(keep).collect();
-    let tail: String = s.chars().skip(n - keep).collect();
+    let budget = (max - 1) / 2;
+    let fit = |chars: &mut dyn Iterator<Item = char>| {
+        let mut used = 0;
+        let mut kept = Vec::new();
+        for c in chars {
+            used += width(c);
+            if used > budget {
+                break;
+            }
+            kept.push(c);
+        }
+        kept
+    };
+    let head: String = fit(&mut s.chars()).into_iter().collect();
+    let tail: String = fit(&mut s.chars().rev()).into_iter().rev().collect();
     format!("{head}…{tail}")
+}
+
+fn is_wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
+}
+
+/// A link as a person reads it: escapes decoded, nothing that could break the line.
+fn readable_url(url: &str) -> String {
+    sdm_core::percent_decode(url)
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 fn ghost(label: &'static str, msg: Message) -> Element<'static, Message> {

@@ -50,12 +50,33 @@ impl Manager {
         d
     }
 
+    /// Drop a job from the list. With `delete_files`, its data goes too: the
+    /// finished file, or a partial download's working file and sidecar.
     pub fn remove(&mut self, d: &Download, delete_files: bool) {
         d.pause();
         let id = d.id();
         if delete_files {
-            let _ = std::fs::remove_file(d.working_path());
-            let _ = std::fs::remove_file(d.state_path());
+            let running = d.is_active();
+            let d = d.clone();
+            let delete = move || {
+                // A running job checkpoints its sidecar as it stops; let it.
+                for _ in 0..100 {
+                    if !d.is_active() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if d.status() == Status::Complete {
+                    let _ = std::fs::remove_file(d.output_path());
+                }
+                let _ = std::fs::remove_file(d.working_path());
+                let _ = std::fs::remove_file(d.state_path());
+            };
+            if running {
+                std::thread::spawn(delete);
+            } else {
+                delete();
+            }
         }
         self.downloads.retain(|x| x.id() != id);
         self.save_queue();
@@ -140,5 +161,41 @@ impl Manager {
             });
             self.downloads.push(dl);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_keeps_the_file_unless_asked_to_delete_it() {
+        // A private scratch profile: never the real queue.json.
+        let dir = std::env::temp_dir().join(format!("sdm-remove-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = Manager {
+            default_dir: dir.clone(),
+            queue_path: dir.join("queue.json"),
+            downloads: Vec::new(),
+        };
+        let mut finished = |name: &str| {
+            let file = dir.join(name);
+            std::fs::write(&file, b"data").unwrap();
+            let d = Download::new("https://example.com/f", &dir, Some(name), 1, None);
+            d.restore_complete(Some(4), file.clone());
+            m.downloads.push(d.clone());
+            (d, file)
+        };
+        let (kept, kept_file) = finished("kept.bin");
+        let (gone, gone_file) = finished("gone.bin");
+
+        m.remove(&kept, false);
+        m.remove(&gone, true);
+
+        assert!(m.downloads.is_empty());
+        assert!(kept_file.exists(), "removing from the list leaves the file");
+        assert!(!gone_file.exists(), "removing with delete takes the file too");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

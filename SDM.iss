@@ -56,4 +56,7 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-host"; Flags: runhidd
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; SDM lives on in the tray, and a running SDM.exe can't be removed: ask it to
+; quit first (it saves its queue and waits until it has exited).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--quit"; Flags: runhidden; RunOnceId: "QuitSdm"
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-host"; Flags: runhidden; RunOnceId: "UnregisterSdmHost"
