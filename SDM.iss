@@ -3,7 +3,7 @@
 ; with a Start-Menu shortcut, optional desktop shortcut, and an uninstaller.
 
 #define MyAppName "SDM"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
@@ -34,6 +34,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "dist\SDM.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs; Excludes: "*.pem,.sdm-key-info.json"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

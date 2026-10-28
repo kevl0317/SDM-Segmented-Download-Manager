@@ -11,9 +11,10 @@ Works in Chrome and Edge (Manifest V3).
 1. **Install SDM** (`SDM-Setup-*.exe`). The installer registers the native host
    automatically. (To register manually, run `SDM.exe --register-host` once;
    `--unregister-host` removes it.)
-2. **Load this folder** in your browser:
+2. **Load the extension folder** in your browser (the installer also places a copy
+   at your SDM install folder, e.g. `%LocalAppData%\Programs\SDM\extension`):
    - Chrome: `chrome://extensions` → enable **Developer mode** → **Load unpacked**
-     → pick this `extension/` folder.
+     → pick the `extension/` folder.
    - Edge: `edge://extensions` → **Developer mode** → **Load unpacked**.
    - The extension ID is fixed (`mbaoofinhcijeneijhaglnjonhikbojj`), so the native
      host already allows it — no ID copying needed.

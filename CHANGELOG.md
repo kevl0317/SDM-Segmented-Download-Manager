@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.3.0 — 2026-10-28
 
 ### Added
 - **Browser integration (Chrome/Edge).** An optional Manifest V3 extension
