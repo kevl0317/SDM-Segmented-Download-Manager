@@ -6,6 +6,10 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Rust
+/target/
+**/*.rs.bk
+
 # Build outputs (ship these via GitHub Releases, not source control)
 build/
 dist/
