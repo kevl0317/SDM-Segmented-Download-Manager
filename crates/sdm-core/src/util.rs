@@ -23,9 +23,13 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// `~/.sdm`, created if missing. Holds the queue and IPC port/token files.
+/// `~/.sdm` (or `$SDM_CONFIG_DIR`), created if missing. Holds the queue, the
+/// native-host manifest and the IPC endpoint files. The override keeps dev and
+/// test runs off a real profile.
 pub fn config_dir() -> PathBuf {
-    let d = home_dir().join(".sdm");
+    let d = std::env::var_os("SDM_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".sdm"));
     let _ = std::fs::create_dir_all(&d);
     d
 }
