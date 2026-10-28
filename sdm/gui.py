@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from .cli import human_bytes, human_time
 from .clipboard import ClipboardMonitor
@@ -72,6 +72,13 @@ def fontspec(size_px: int, weight: str = "normal") -> tuple:
     Tk's point-based scaling and tracks UI_SCALE exactly."""
     spec = (FONT_FAMILY, -px(size_px))
     return spec + (weight,) if weight != "normal" else spec
+
+
+# Progress-bar glyphs. Left-partial blocks (1/8..7/8) give the bar a smooth
+# leading edge; the bar is sized to the column at runtime (see _recompute_bar_blocks).
+_BAR_FULL = "█"
+_BAR_TRACK = "░"
+_BAR_EIGHTHS = {1: "▏", 2: "▎", 3: "▍", 4: "▌", 5: "▋", 6: "▊", 7: "▉"}
 
 
 def enable_hidpi() -> float:
@@ -432,7 +439,7 @@ class App(ttk.Frame):
         self.tree = ttk.Treeview(wrap, columns=cols, show="headings", selectmode="browse")
         layout = {
             "name": ("Name", 300, "w"), "size": ("Size", 95, "e"),
-            "progress": ("Progress", 190, "w"), "speed": ("Speed", 100, "e"),
+            "progress": ("Progress", 200, "w"), "speed": ("Speed", 100, "e"),
             "eta": ("ETA", 75, "e"), "status": ("Status", 120, "w"),
         }
         for c, (txt, w, anchor) in layout.items():
@@ -442,6 +449,12 @@ class App(ttk.Frame):
         vsb = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.grid(row=0, column=1, sticky="ns")
+
+        # Measure the tree's own font so the progress bar fits its column.
+        self._bar_font = tkfont.Font(root=self, font=fontspec(13))
+        self._bar_colw = -1
+        self._bar_blocks = 10
+        self._recompute_bar_blocks()
 
         self.tree.tag_configure("odd", background=PALETTE["stripe"])
         self.tree.tag_configure("even", background=PALETTE["surface"])
@@ -522,12 +535,38 @@ class App(ttk.Frame):
         sel = self.tree.selection()
         return self._rows.get(sel[0]) if sel else None
 
+    def _recompute_bar_blocks(self) -> None:
+        """Pick a block count so the bar *and* the trailing "100.0%" fit the
+        Progress column at the current DPI. A fixed count overflowed the column
+        (clipping the tail of the bar and the percentage), so the visible fill
+        no longer matched the real progress."""
+        try:
+            colw = int(self.tree.column("progress", "width"))
+        except (tk.TclError, ValueError):
+            colw = px(190)
+        blk = self._bar_font.measure(_BAR_FULL) or px(8)
+        pctw = self._bar_font.measure(" 100.0%")
+        self._bar_blocks = max(6, (colw - pctw - px(12)) // blk)
+        self._bar_colw = colw
+
     def _progress_cell(self, d: Download) -> str:
         p = d.progress()
         if p is None:
             return "downloading…" if d.status is Status.RUNNING else "—"
-        blocks = int(p * 16)
-        return "█" * blocks + "░" * (16 - blocks) + f" {p * 100:4.1f}%"
+        n = self._bar_blocks
+        fill = p * n
+        full = int(fill)
+        eighth = int((fill - full) * 8 + 0.5)   # round the remainder to eighths
+        if eighth >= 8:
+            full += 1
+            eighth = 0
+        bar = _BAR_FULL * min(full, n)
+        if full < n:
+            if eighth:
+                bar += _BAR_EIGHTHS[eighth]      # smooth leading edge
+                full += 1
+            bar += _BAR_TRACK * (n - full)
+        return f"{bar} {p * 100:4.1f}%"
 
     def _popup(self, event):
         iid = self.tree.identify_row(event.y)
@@ -784,6 +823,8 @@ class App(ttk.Frame):
     def _refresh(self):
         active = 0
         total_speed = 0.0
+        if self.tree.column("progress", "width") != self._bar_colw:
+            self._recompute_bar_blocks()   # user dragged the column border
         for iid, d in self._rows.items():
             if d.status is Status.RUNNING:
                 active += 1
