@@ -17,7 +17,8 @@ pub fn main() -> iced::Result {
     iced::application("SDM — Segmented Download Manager", update, view)
         .subscription(subscription)
         .theme(|_| sdm_theme())
-        .window_size(Size::new(1000.0, 640.0))
+        .default_font(ui_font())
+        .window_size(Size::new(1100.0, 680.0))
         .run_with(init)
 }
 
@@ -391,6 +392,17 @@ fn open_folder(dir: &Path) {
     let _ = std::process::Command::new("open").arg(dir).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+}
+
+// A UI font with full CJK coverage on Windows (filenames are often non-Latin);
+// elsewhere iced's default, which falls back through the system fonts.
+#[cfg(target_os = "windows")]
+fn ui_font() -> iced::Font {
+    iced::Font::with_name("Microsoft YaHei UI")
+}
+#[cfg(not(target_os = "windows"))]
+fn ui_font() -> iced::Font {
+    iced::Font::DEFAULT
 }
 
 fn sdm_theme() -> Theme {
