@@ -36,10 +36,31 @@ impl Status {
 /// Everything the engine can fail with. Network and IO errors convert in.
 #[derive(Debug, thiserror::Error)]
 pub enum SdmError {
-    #[error("http error: {0}")]
+    #[error("{}", describe_http(.0))]
     Http(#[from] reqwest::Error),
-    #[error("io error: {0}")]
+    #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+}
+
+/// A failed request in words a person can act on: the server's answer
+/// ("401 Unauthorized") with a hint where there's an obvious one, and never the
+/// URL, which can be a long signed link.
+pub fn describe_http(e: &reqwest::Error) -> String {
+    if let Some(status) = e.status() {
+        return match status.as_u16() {
+            401 | 403 => format!("{status}: the link may have expired or need a sign-in"),
+            404 | 410 => format!("{status}: the file is no longer there"),
+            _ => status.to_string(),
+        };
+    }
+    if e.is_timeout() {
+        return "The server took too long to answer".to_string();
+    }
+    if e.is_connect() {
+        return "Couldn't reach the server".to_string();
+    }
+    let text = e.to_string();
+    text.split(" for url (").next().unwrap_or(&text).to_string()
 }

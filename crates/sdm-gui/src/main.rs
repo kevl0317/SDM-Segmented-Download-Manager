@@ -1079,18 +1079,20 @@ fn set_titlebar(handle: window::raw_window_handle::WindowHandle<'_>, dark: bool)
 fn set_titlebar(_handle: window::raw_window_handle::WindowHandle<'_>, _dark: bool) {}
 
 /// Redraw a visible caption by flipping its active state and back — the only
-/// thing that makes DWM repaint it with a new title-bar color.
+/// thing that makes DWM repaint it with a new title-bar color. Sent through the
+/// window's own procedure, so the dark menu bar's painting (muda's hook, which
+/// darkens the separator under the bar) runs on this repaint too.
 #[cfg(windows)]
 fn repaint_caption(handle: window::raw_window_handle::WindowHandle<'_>) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, GetForegroundWindow, IsWindowVisible, WM_NCACTIVATE,
+        GetForegroundWindow, IsWindowVisible, SendMessageW, WM_NCACTIVATE,
     };
     if let Some(hwnd) = hwnd_of(handle) {
         unsafe {
             if IsWindowVisible(hwnd) != 0 {
                 let active = (GetForegroundWindow() == hwnd) as usize;
-                DefWindowProcW(hwnd, WM_NCACTIVATE, active ^ 1, 0);
-                DefWindowProcW(hwnd, WM_NCACTIVATE, active, 0);
+                SendMessageW(hwnd, WM_NCACTIVATE, active ^ 1, 0);
+                SendMessageW(hwnd, WM_NCACTIVATE, active, 0);
             }
         }
     }
@@ -1557,9 +1559,18 @@ fn full_card(selected: bool, deletes: bool, d: &Download) -> Element<'static, Me
     .width(Length::Fill)
     .height(Length::Fixed(8.0));
 
-    let mut meta_row = row![text(meta_label(d)).size(12.0).style(text_muted)].align_y(Alignment::Center);
+    // The details get whatever room the buttons leave, on one line, so a long
+    // message can't squeeze the buttons.
+    let meta = container(
+        text(meta_label(d))
+            .size(12.0)
+            .style(text_muted)
+            .wrapping(text::Wrapping::None),
+    )
+    .width(Length::Fill)
+    .clip(true);
+    let mut meta_row = row![meta].spacing(4).align_y(Alignment::Center);
     if selected {
-        meta_row = meta_row.push(Space::with_width(Length::Fill));
         match status {
             Status::Running | Status::Probing | Status::Queued => {
                 meta_row = meta_row.push(ghost("Pause", Message::Pause));

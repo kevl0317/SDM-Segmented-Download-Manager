@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.0.1 — 2026-10-28
+
+### Fixed
+- **A white line under the dark menu bar** after switching from the light theme.
+- **The download card's buttons** could be squeezed into slivers by a long
+  message. They now keep their size, and the details stay on one line.
+- **Download errors read plainly**, e.g. "401 Unauthorized: the link may have
+  expired or need a sign-in", instead of the raw error with the whole link in
+  it. A download the server refuses (401, 403, 404…) now fails right away
+  instead of retrying first.
+
 ## v2.0.0 — 2026-10-28
 
 A complete rewrite in Rust: one native executable with no Python runtime, and a
