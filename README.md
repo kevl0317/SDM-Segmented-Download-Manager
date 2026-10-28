@@ -28,7 +28,7 @@ browser, and a tray icon that keeps it running in the background.
 
 ## Install
 
-Download **`SDM-Setup-2.0.0.exe`** from the
+Download the latest **`SDM-Setup-<version>.exe`** from the
 [Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
 page and run it. It installs SDM per-user (no admin) on 64-bit Windows 10 or 11,
 with a Start-Menu shortcut and an uninstaller, and registers the browser host.
@@ -71,7 +71,7 @@ builds the installer.
 ```bash
 cargo build --release -p sdm-gui   # -> target/release/sdm-gui.exe (installed as SDM.exe)
 cargo build --release -p sdm-cli   # -> target/release/sdm.exe (headless CLI)
-iscc SDM.iss                       # -> dist/SDM-Setup-2.0.0.exe (needs the sdm-gui build)
+iscc SDM.iss                       # -> dist/SDM-Setup-<version>.exe (needs the sdm-gui build)
 cargo test --workspace
 ```
 
