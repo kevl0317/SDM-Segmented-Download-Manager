@@ -34,9 +34,11 @@ pub fn config_dir() -> PathBuf {
     d
 }
 
-/// `~/Downloads`.
+/// `~/Downloads` (or `$SDM_DOWNLOAD_DIR`, for dev and test runs).
 pub fn default_download_dir() -> PathBuf {
-    home_dir().join("Downloads")
+    std::env::var_os("SDM_DOWNLOAD_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("Downloads"))
 }
 
 /// Human-readable byte count: `123B`, `1.5KB`, `2.0GB`. `None` renders as `?`.
@@ -169,4 +171,102 @@ pub fn filename_from_url(url: &str) -> String {
         }
     }
     "download".into()
+}
+
+/// File types worth catching when a link is copied, so ordinary page links
+/// don't trigger a prompt. Mirrors the original clipboard filter.
+pub const DOWNLOAD_EXTENSIONS: &[&str] = &[
+    "zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz", "z", //
+    "exe", "msi", "dmg", "pkg", "deb", "rpm", "appimage", "apk", "jar", "bin", //
+    "iso", "img", //
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", //
+    "mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "wma", //
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub", "mobi", //
+    "torrent",
+];
+
+/// A clean download URL from clipboard text, or `None`: one http(s)/ftp URL
+/// with no whitespace whose filename has a known download extension — or any
+/// such link when `monitor_all` is set.
+pub fn extract_download_url(text: &str, monitor_all: bool) -> Option<String> {
+    let t = text
+        .trim()
+        .trim_matches(|c| matches!(c, '<' | '>' | '"' | '\''));
+    if t.is_empty() || t.len() > 4096 || t.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    if !["http://", "https://", "ftp://"]
+        .iter()
+        .any(|s| lower.starts_with(s))
+    {
+        return None;
+    }
+    if monitor_all {
+        return Some(t.to_string());
+    }
+    let url = reqwest::Url::parse(t).ok()?;
+    let name = url.path().rsplit('/').next().unwrap_or("");
+    let (_, ext) = name.rsplit_once('.')?;
+    DOWNLOAD_EXTENSIONS
+        .contains(&ext.to_ascii_lowercase().as_str())
+        .then(|| t.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catches_download_links() {
+        assert_eq!(
+            extract_download_url("https://x.com/a/file.zip", false).as_deref(),
+            Some("https://x.com/a/file.zip")
+        );
+        assert_eq!(
+            extract_download_url("  <https://x.com/Setup.EXE?sig=1>  ", false).as_deref(),
+            Some("https://x.com/Setup.EXE?sig=1")
+        );
+        assert!(extract_download_url("ftp://host/pub/disc.iso", false).is_some());
+    }
+
+    #[test]
+    fn ignores_pages_text_and_bare_hosts() {
+        assert!(extract_download_url("https://x.com/page.html", false).is_none());
+        assert!(extract_download_url("https://x.com/", false).is_none());
+        assert!(extract_download_url("see https://x.com/a.zip", false).is_none());
+        assert!(extract_download_url("x.com/a.zip", false).is_none());
+        assert!(extract_download_url("", false).is_none());
+    }
+
+    #[test]
+    fn monitor_all_takes_any_link_but_not_text() {
+        assert!(extract_download_url("https://x.com/page.html", true).is_some());
+        assert!(extract_download_url("not a link", true).is_none());
+    }
+
+    #[test]
+    fn formats_sizes_and_times() {
+        assert_eq!(human_bytes(Some(512)), "512B");
+        assert_eq!(human_bytes(Some(1536)), "1.5KB");
+        assert_eq!(human_bytes(None), "?");
+        assert_eq!(human_time(Some(65.0)), "01:05");
+        assert_eq!(human_time(Some(3725.0)), "1:02:05");
+        assert_eq!(human_time(None), "--:--");
+    }
+
+    #[test]
+    fn derives_filenames() {
+        assert_eq!(
+            parse_content_disposition("attachment; filename=\"a b.zip\"").as_deref(),
+            Some("a b.zip")
+        );
+        assert_eq!(
+            parse_content_disposition("attachment; filename*=UTF-8''%E7%8E%8B.rar").as_deref(),
+            Some("王.rar")
+        );
+        assert_eq!(filename_from_url("https://x.com/dl/%E7%8E%8B.rar?x=1"), "王.rar");
+        assert_eq!(filename_from_url("https://x.com/"), "download");
+        assert_eq!(sanitize_filename("a/b:c*?.txt"), "a_b_c__.txt");
+    }
 }

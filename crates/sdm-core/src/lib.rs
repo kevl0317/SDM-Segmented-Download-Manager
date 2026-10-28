@@ -17,6 +17,7 @@ pub use ipc::CatchRequest;
 pub use manager::Manager;
 pub use types::{SdmError, Status};
 pub use util::{
-    config_dir, default_download_dir, default_headers, filename_from_url, human_bytes, human_time,
-    parse_content_disposition, percent_decode, sanitize_filename, DEFAULT_UA,
+    config_dir, default_download_dir, default_headers, extract_download_url, filename_from_url,
+    human_bytes, human_time, parse_content_disposition, percent_decode, sanitize_filename,
+    DEFAULT_UA, DOWNLOAD_EXTENSIONS,
 };
