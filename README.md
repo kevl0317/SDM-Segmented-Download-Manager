@@ -1,110 +1,126 @@
 # SDM — Segmented Download Manager
 
-![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
-![Dependencies](https://img.shields.io/badge/dependencies-none%20(stdlib)-brightgreen)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey)
 
-A fast, dependency-free download manager. SDM splits each file into byte-range
-**segments** and fetches them over several connections at once, with pause/resume
-and dynamic work-stealing so no connection sits idle. It ships with a DPI-aware
-desktop GUI and a headless CLI.
-
-**Pure Python standard library — no pip installs, no native dependencies.**
+A fast download manager. SDM splits each file into byte-range **segments** and
+fetches them over several connections at once, with pause/resume and dynamic
+work-stealing so no connection sits idle. It's a single native app written in
+Rust: a clean desktop window, a catch popup for links from your clipboard and
+browser, and a tray icon that keeps it running in the background.
 
 ## Features
 
-- **Segmented downloads** over HTTP/HTTPS/FTP with a configurable number of connections
-- **Pause & resume**, including across app restarts (progress is checkpointed to a sidecar)
+- **Segmented downloads** over HTTP and HTTPS, 8 connections per file
+- **Pause & resume**, including across restarts (progress is checkpointed to a sidecar)
 - **Work-stealing** — when a connection finishes, it splits the largest remaining
   segment and helps finish it, so one slow route no longer drags out the tail
-- **DPI-aware Tkinter GUI** — download queue, a live per-segment progress view,
-  speed/ETA, right-click menu, and clipboard URL capture
-- **Clipboard monitoring** — optionally offer to download a link the moment you
-  copy it (opt-in; filters to downloadable file types by default)
-- **Runs in the system tray** — closing the window keeps SDM running in the
-  background (downloads and clipboard monitoring stay alive); reopen or quit from
-  the tray icon (Windows)
-- **Browser integration** (Chrome/Edge) — an optional extension catches links you
-  click (or right-click → "Download with SDM") and hands them to SDM via native
-  messaging; see [`extension/`](extension/)
-- **Headless CLI** with a text progress bar
-- **Single-file packaging** — a `.pyz` zipapp, or a standalone Windows `.exe`
-- **Zero third-party dependencies**
+- **Modern, minimal window** with dark and light themes; downloads are compact
+  rows that expand into a card with a live per-segment bar while they run
+- **Catches download links** you copy (event-driven, no polling) and, with the
+  optional Chrome/Edge extension, links you click — a small popup asks before
+  anything downloads
+- **Runs in the system tray** — closing the window keeps SDM running, so
+  downloads and catching continue; one SDM at a time
+- **Native menu bar** — File, Downloads, View, Options, Help
+- **Headless CLI** (`sdm`) with a text progress bar, built from source
 
-## Quick start
+## Install
 
-Requires Python 3.9+ with Tkinter (standard on python.org and conda builds).
+Download the latest **`SDM-Setup-<version>.exe`** from the
+[Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
+page and run it. It installs SDM per-user (no admin) on 64-bit Windows 10 or 11,
+with a Start-Menu shortcut and an uninstaller, and registers the browser host.
+Installing over 1.x upgrades it in place; your download list and settings carry
+over.
 
-```bash
-git clone https://github.com/kevl0317/SDM-Segmented-Download-Manager.git
-cd SDM-Segmented-Download-Manager
+The installer is unsigned, so Windows SmartScreen may warn on first run
+(More info → Run anyway).
 
-python -m sdm                                   # desktop GUI
-python -m sdm "https://example.com/big.iso" -n 8    # CLI, 8 connections
-```
+## Using SDM
 
-CLI options: `-o/--out <dir>`, `-n/--connections <N>`, `-f/--filename <name>`.
+- **Download a link:** paste it into the box at the top (Ctrl+N focuses it) and
+  press Download. Files go to your Downloads folder.
+- **Catch popup:** when SDM catches a link, a small window shows it with the
+  file name, which you can edit. Enter downloads, Esc cancels. The main window
+  comes forward only once you download.
+- **Copied links:** Options → Catch copied links. By default only links that
+  look like downloadable files are caught; Catch all link types drops that filter.
+- **Clicked links:** load the browser extension; see [`extension/`](extension/).
+- **Manage a download:** click its row to expand it, then Pause / Resume, Open
+  (its folder) or Remove. Remove takes the entry off the list; with
+  Options → Remove also deletes the file, it deletes the file too (the button
+  then reads Delete).
+- **Tray:** closing the window hides SDM to the tray. Double-click the tray icon
+  to reopen it; right-click for Open SDM / Quit. Turn this off under
+  Options → Keep running in the tray when closed.
+- **View:** Show completed downloads, Always on top, and Theme (Dark / Light).
 
-## Run a packaged build
+Settings and the download list live in `%UserProfile%\.sdm`.
 
-```bash
-python dist/sdm.pyz          # GUI, from the zipapp (any Python 3.9+ with Tkinter)
-```
-
-On Windows you can also run the standalone `SDM.exe` (needs no Python installed),
-or double-click `SDM.bat`, which builds and launches the app. Or install it with
-**`SDM-Setup.exe`** from the [Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
-page — a per-user install (no admin) with a Start-Menu shortcut and an uninstaller.
+`SDM.exe --register-host` re-registers the browser host, `--unregister-host`
+removes it, and `--quit` closes a running SDM (the uninstaller uses it).
 
 ## Build it yourself
 
+Needs a stable Rust toolchain (MSVC on Windows). The Windows SDK, if installed,
+embeds the app icon and version info; [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+builds the installer.
+
 ```bash
-python build.py        # -> dist/sdm.pyz   (stdlib zipapp, no dependencies)
-build_exe.bat          # -> dist/SDM.exe   (Windows standalone, via PyInstaller)
-iscc SDM.iss           # -> dist/SDM-Setup-1.2.0.exe  (Windows installer, via Inno Setup)
+cargo build --release -p sdm-gui   # -> target/release/sdm-gui.exe (installed as SDM.exe)
+cargo build --release -p sdm-cli   # -> target/release/sdm.exe (headless CLI)
+iscc SDM.iss                       # -> dist/SDM-Setup-<version>.exe (needs the sdm-gui build)
+cargo test --workspace
 ```
+
+CLI: `sdm <url> [-o/--out <dir>] [-n/--connections <N>] [-f/--filename <name>]`.
+Ctrl+C stops the download.
+
+The desktop app targets Windows. The engine and CLI are plain Rust and should
+build on macOS and Linux, but only Windows is tested so far.
 
 ## How it works
 
 1. **Probe** — a ranged `GET bytes=0-0` reveals the total size, whether the server
    honors ranges, and the filename.
 2. **Plan** — split `[0, size)` into contiguous byte-range segments.
-3. **Fetch** — a pool of worker threads, each writing its range at the right file offset.
-4. **Work-steal** — idle workers split and help the segment with the most bytes left.
-5. **Persist** — progress is checkpointed; pause stops cleanly and resume continues
-   from where each segment left off.
-6. **Finalize** — segments reassemble into the finished file.
+3. **Fetch** — parallel connections (async, on tokio), each writing its range at
+   the right file offset.
+4. **Work-steal** — an idle connection splits the segment with the most bytes
+   left and takes half.
+5. **Persist** — progress is checkpointed to a `.sdm` sidecar next to the
+   `.sdmdownload` working file; pause stops cleanly and resume continues where
+   each segment left off.
+6. **Finalize** — the finished file gets its real name.
 
 If a server won't honor ranges or won't reveal the size, SDM falls back to a single
-stream. See [`sdm/README.md`](sdm/README.md) for the detailed design.
+stream.
 
 ## Design notes
 
 SDM is a straightforward HTTP client: it uses only the standard `Range` request
 mechanism. It installs no drivers, does not intercept system or browser traffic,
-and is not affiliated with any commercial download manager.
+and is not affiliated with any commercial download manager. The browser extension
+hands links over through the standard native-messaging API, and the app listens
+only on a token-guarded loopback socket.
 
 ## Project layout
 
 | Path | Role |
 |------|------|
-| `sdm/engine.py` | download engine — probe, segmentation, work-stealing, resume |
-| `sdm/manager.py` | job list + queue persistence |
-| `sdm/gui.py` | DPI-aware Tkinter GUI |
-| `sdm/clipboard.py` | event-driven clipboard link monitor |
-| `sdm/tray.py` | Windows system-tray icon (run in background) |
-| `sdm/ipc.py`, `sdm/nativehost.py` | local IPC + browser native-messaging host |
+| `crates/sdm-core` | download engine (probe, segmentation, work-stealing, resume), queue persistence, loopback IPC, link and filename helpers |
+| `crates/sdm-gui` | the desktop app (iced): window, catch popup, tray, menus, clipboard catching; also the browser's native-messaging host |
+| `crates/sdm-cli` | headless CLI (`sdm`) |
 | `extension/` | Chrome/Edge extension that catches clicked download links |
-| `sdm/cli.py` | headless CLI |
-| `sdm/__main__.py` | entry point (GUI by default, CLI when given a URL) |
-| `build.py`, `run_app.py`, `build_exe.bat`, `SDM.iss`, `SDM.bat` | packaging, installer & launchers |
+| `SDM.iss` | Inno Setup installer script |
 
 ## Contributing
 
-Issues and pull requests are welcome. The codebase is small, stdlib-only, and
-has a self-contained test for the engine (segmented download, pause/resume,
-work-stealing, and the no-range fallback).
+Issues and pull requests are welcome. `cargo test --workspace` runs the tests for
+the engine (segment planning, work-stealing), removing downloads, the IPC wire
+format and the link helpers.
 
 ## License
 

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{SdmError, Status};
+use crate::types::{describe_http, SdmError, Status};
 use crate::util::{default_headers, filename_from_url, parse_content_disposition, sanitize_filename};
 
 const MIN_SEGMENT: u64 = 1 << 20; // don't parallelize below ~1 MiB/segment
@@ -636,10 +636,15 @@ impl Inner {
                 .and_then(|r| r.error_for_status())
             {
                 Ok(r) => r,
-                Err(_) => {
+                Err(e) => {
+                    // A refusal (401, 403, 404…) won't change on a retry; a
+                    // timeout or a dropped connection might.
+                    let refused = e
+                        .status()
+                        .is_some_and(|s| s.is_client_error() && !matches!(s.as_u16(), 408 | 429));
                     retries += 1;
-                    if retries > MAX_RETRIES {
-                        return Err(SdmError::Other(format!("segment {idx}: too many retries")));
+                    if refused || retries > MAX_RETRIES {
+                        return Err(SdmError::Http(e));
                     }
                     tokio::time::sleep(Duration::from_secs((1u64 << retries).min(10))).await;
                     continue;
@@ -705,7 +710,7 @@ impl Inner {
         {
             Ok(r) => r,
             Err(e) => {
-                self.fail(e.to_string());
+                self.fail(describe_http(&e));
                 return;
             }
         };
@@ -727,7 +732,7 @@ impl Inner {
                     self.lock().stream_downloaded += chunk.len() as u64;
                 }
                 Some(Err(e)) => {
-                    self.fail(e.to_string());
+                    self.fail(describe_http(&e));
                     return;
                 }
                 None => break,

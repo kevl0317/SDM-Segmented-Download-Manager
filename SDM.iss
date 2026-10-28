@@ -6,7 +6,7 @@
 ; The AppId is the one v1.x used, so installing over v1.x upgrades it in place.
 
 #define MyAppName "SDM"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
