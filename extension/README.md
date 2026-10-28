@@ -21,8 +21,10 @@ Works in Chrome and Edge (Manifest V3).
 3. **Use it:** click a download link, or right-click → **Download with SDM**. A
    small SDM popup appears centered on screen; click **Download**.
 
-Click the toolbar icon to **pause/resume** auto-catching of browser downloads
-(the context-menu item always works).
+To **pause/resume** auto-catching, open the extension from the browser's
+extensions (puzzle-piece) menu and click **SDM** — it isn't pinned to the
+toolbar by default, and SDM never force-pins it; pin it yourself only if you
+want one-click access. The right-click **Download with SDM** item always works.
 
 ## How it works
 

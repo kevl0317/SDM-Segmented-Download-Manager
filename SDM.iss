@@ -1,9 +1,12 @@
-; Inno Setup script for SDM. Compile with:  iscc SDM.iss
+; Inno Setup script for SDM. Build the app, then compile the installer:
+;   cargo build --release -p sdm-gui
+;   iscc SDM.iss
 ; Produces dist\SDM-Setup-<version>.exe -- a per-user installer (no admin),
 ; with a Start-Menu shortcut, optional desktop shortcut, and an uninstaller.
+; The AppId is the one v1.x used, so installing over v1.x upgrades it in place.
 
 #define MyAppName "SDM"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
@@ -21,6 +24,10 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; A 64-bit build for Windows 10 and later (ARM64 runs it under emulation).
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
 OutputDir=dist
 OutputBaseFilename=SDM-Setup-{#MyAppVersion}
 SetupIconFile=sdm.ico
@@ -28,12 +35,15 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; Closing SDM's window only hides it to the tray, so a running copy has to be
+; closed forcibly before SDM.exe can be replaced.
+CloseApplications=force
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Files]
-Source: "dist\SDM.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "target\release\sdm-gui.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs; Excludes: "*.pem,.sdm-key-info.json"
 
 [Icons]
@@ -46,4 +56,7 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-host"; Flags: runhidd
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; SDM lives on in the tray, and a running SDM.exe can't be removed: ask it to
+; quit first (it saves its queue and waits until it has exited).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--quit"; Flags: runhidden; RunOnceId: "QuitSdm"
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-host"; Flags: runhidden; RunOnceId: "UnregisterSdmHost"

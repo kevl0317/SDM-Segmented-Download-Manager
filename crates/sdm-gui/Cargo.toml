@@ -1,0 +1,25 @@
+[package]
+name = "sdm-gui"
+description = "SDM desktop GUI (iced): download queue, live per-segment progress, pause/resume."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sdm-gui"
+path = "src/main.rs"
+
+[dependencies]
+sdm-core = { path = "../sdm-core" }
+iced = { version = "0.13", features = ["tokio", "canvas"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tray-icon = "0.21"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+clipboard-win = { version = "5", features = ["monitor"] }
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
