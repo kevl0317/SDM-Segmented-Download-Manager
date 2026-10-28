@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -18,6 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 from .cli import human_bytes, human_time
 from .clipboard import ClipboardMonitor
 from .engine import Download, Status
+from .ipc import IpcServer
 from .manager import Manager, config_dir
 from .tray import SystemTray, TRAY_AVAILABLE
 
@@ -90,6 +92,23 @@ def enable_hidpi() -> float:
     except Exception:  # noqa: BLE001
         dpi = 96
     return max(1.0, dpi / 96.0)
+
+
+def primary_screen_size(widget) -> tuple:
+    """Primary (main) monitor size in physical pixels."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            w, h = int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))  # SM_CXSCREEN / SM_CYSCREEN
+            if w > 0 and h > 0:
+                return w, h
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return widget.winfo_screenwidth(), widget.winfo_screenheight()
+    except tk.TclError:
+        return 1920, 1080
 
 
 # ---- settings ------------------------------------------------------------
@@ -214,7 +233,7 @@ class SegmentBar(tk.Canvas):
 
 class AddDialog(tk.Toplevel):
     def __init__(self, master, default_dir: str, default_conns: int, clipboard_url: str = "",
-                 standalone: bool = False):
+                 standalone: bool = False, filename: str = ""):
         super().__init__(master)
         self.title("Download this link?" if standalone else "Add download")
         self.resizable(False, False)
@@ -244,7 +263,7 @@ class AddDialog(tk.Toplevel):
         ttk.Button(frm, text="Browse…", command=self._browse).grid(row=1, column=2, padx=(px(8), 0))
 
         ttk.Label(frm, text="Filename").grid(row=2, column=0, sticky="w", pady=px(5), padx=(0, px(10)))
-        self.name_var = tk.StringVar()
+        self.name_var = tk.StringVar(value=filename)
         ttk.Entry(frm, textvariable=self.name_var, font=fontspec(13)).grid(
             row=2, column=1, columnspan=2, sticky="ew", pady=px(5))
         ttk.Label(frm, text="leave blank to name it from the server / URL",
@@ -287,9 +306,10 @@ class AddDialog(tk.Toplevel):
 
     def _center_screen(self):
         try:
+            self.update_idletasks()
             w, h = self.winfo_width(), self.winfo_height()
-            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-            self.geometry(f"+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+            sw, sh = primary_screen_size(self)
+            self.geometry(f"+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}")
         except tk.TclError:
             pass
 
@@ -335,6 +355,9 @@ class App(ttk.Frame):
         self.tray = (SystemTray("SDM - Segmented Download Manager",
                                 on_open=self._tray_open_evt.set, on_quit=self._tray_quit_evt.set)
                      if TRAY_AVAILABLE else None)
+        self._ipc_queue = queue.Queue()
+        self._ipc = IpcServer(on_request=self._ipc_queue.put)
+        self._ipc_after_id = None
 
         self._build_toolbar()
         self._build_tree()
@@ -351,6 +374,8 @@ class App(ttk.Frame):
             self.clip.start()
         if self.tray is not None and self.tray.start():
             self._tray_after_id = self.after(150, self._tray_drain)
+        if self._ipc.start():
+            self._ipc_after_id = self.after(150, self._ipc_drain)
         master.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
     def stop(self) -> None:
@@ -360,7 +385,11 @@ class App(ttk.Frame):
                 self.tray.stop()
             except Exception:   # noqa: BLE001
                 pass
-        for attr in ("_after_id", "_tray_after_id", "_topmost_after"):
+        try:
+            self._ipc.stop()
+        except Exception:   # noqa: BLE001
+            pass
+        for attr in ("_after_id", "_tray_after_id", "_topmost_after", "_ipc_after_id"):
             job = getattr(self, attr, None)
             if job is not None:
                 try:
@@ -510,13 +539,15 @@ class App(ttk.Frame):
             pass
         self._open_add(clip)
 
-    def _open_add(self, prefill="", from_catch=False):
+    def _open_add(self, prefill="", from_catch=False, extra=None):
         if self._dialog_open:
             return
         self._dialog_open = True
         try:
+            filename = (extra or {}).get("filename") or ""
             dlg = AddDialog(self.master, self.settings.get("last_dir", self.manager.default_dir),
-                            int(self.settings.get("connections", 8)), prefill, standalone=from_catch)
+                            int(self.settings.get("connections", 8)), prefill,
+                            standalone=from_catch, filename=filename)
             self.wait_window(dlg)
             if dlg.result:
                 self.settings["last_dir"] = dlg.result["dest_dir"] or self.manager.default_dir
@@ -525,12 +556,42 @@ class App(ttk.Frame):
                 self.clip.ignore(dlg.result["url"])    # don't re-prompt for what we just added
                 if from_catch:
                     self._bring_to_front()   # raise the GUI only now that the user chose Download
-                d = self.manager.add(**dlg.result)
+                d = self.manager.add(**dlg.result, headers=self._build_headers(extra))
                 iid = self._add_row(d)
                 self.tree.selection_set(iid)
                 d.start()
         finally:
             self._dialog_open = False
+
+    @staticmethod
+    def _build_headers(extra):
+        """Turn a browser catch's cookies/UA/referrer into request headers."""
+        if not extra:
+            return None
+        from .engine import default_headers
+        h = default_headers()
+        if extra.get("user_agent"):
+            h["User-Agent"] = extra["user_agent"]
+        if extra.get("cookies"):
+            h["Cookie"] = extra["cookies"]
+        if extra.get("referrer"):
+            h["Referer"] = extra["referrer"]
+        return h
+
+    def _ipc_drain(self):
+        """Process download requests handed over by the browser native host."""
+        try:
+            while True:
+                self._handle_ipc(self._ipc_queue.get_nowait())
+        except queue.Empty:
+            pass
+        self._ipc_after_id = self.after(150, self._ipc_drain)
+
+    def _handle_ipc(self, msg):
+        url = msg.get("url") if isinstance(msg, dict) else None
+        if url:
+            extra = {k: msg.get(k) for k in ("cookies", "user_agent", "referrer", "filename")}
+            self._open_add(url, from_catch=True, extra=extra)
 
     def _on_clip_url(self, url):
         if self._dialog_open:

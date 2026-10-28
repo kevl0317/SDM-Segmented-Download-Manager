@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "SDM Integration",
+  "version": "1.0.0",
+  "description": "Send downloads to SDM - Segmented Download Manager.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxPClvdPM6tSBykyBqJXxN0x4a9Ep9sm1LfcgaB49Pcw6/emxbTe0QgLYiG29tUh4a+tJCo1l7947byzRkceBl8SsJo5TEtsXefiqs0bnZhKt30teexbQFHC9KBYoLNYvgQLhGox4oSkupJfxX/rw7ab7XII8FsBgvlWYx0jIqUBou1a8nNB44Ga3wdZeYaUBFEvZl0AcqEa5pZlJUXDQC5vg14/jkyzL1t/Q1fDWuBqoKyChlyWprK0DhAR7JEvNMVm07h/EJZd1o8+F4gt47is0f78U2W2yVqs9PSYrGnLixQY0stkg0YiVckbTCsKNti28eSpRGS7iTXsKuN/uXQIDAQAB",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "downloads",
+    "contextMenus",
+    "cookies",
+    "nativeMessaging",
+    "notifications",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "SDM"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

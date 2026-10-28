@@ -25,8 +25,9 @@ class Manager:
         self.downloads: list[Download] = []
 
     def add(self, url: str, dest_dir: Optional[str] = None,
-            filename: Optional[str] = None, connections: int = 8) -> Download:
-        d = Download(url, dest_dir or self.default_dir, filename, connections)
+            filename: Optional[str] = None, connections: int = 8,
+            headers: Optional[dict] = None) -> Download:
+        d = Download(url, dest_dir or self.default_dir, filename, connections, headers=headers)
         self.downloads.append(d)
         self.save_queue()
         return d

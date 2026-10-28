@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Browser integration (Chrome/Edge).** An optional Manifest V3 extension
+  catches links you click (or right-click → "Download with SDM") and hands them
+  to SDM via a native-messaging host (SDM.exe itself, launched by the browser),
+  forwarding cookies, User-Agent and referrer so authenticated downloads work.
+  It reaches the running app over a token-guarded loopback socket, starting SDM
+  if needed. `SDM.exe --register-host` wires up the host; the installer does it
+  automatically. See `extension/`.
+
+### Changed
+- The clipboard / browser catch popup now centers on the primary screen.
+
 ## v1.2.1 — 2026-10-27
 
 ### Changed

@@ -25,6 +25,9 @@ desktop GUI and a headless CLI.
 - **Runs in the system tray** — closing the window keeps SDM running in the
   background (downloads and clipboard monitoring stay alive); reopen or quit from
   the tray icon (Windows)
+- **Browser integration** (Chrome/Edge) — an optional extension catches links you
+  click (or right-click → "Download with SDM") and hands them to SDM via native
+  messaging; see [`extension/`](extension/)
 - **Headless CLI** with a text progress bar
 - **Single-file packaging** — a `.pyz` zipapp, or a standalone Windows `.exe`
 - **Zero third-party dependencies**
@@ -91,6 +94,8 @@ and is not affiliated with any commercial download manager.
 | `sdm/gui.py` | DPI-aware Tkinter GUI |
 | `sdm/clipboard.py` | event-driven clipboard link monitor |
 | `sdm/tray.py` | Windows system-tray icon (run in background) |
+| `sdm/ipc.py`, `sdm/nativehost.py` | local IPC + browser native-messaging host |
+| `extension/` | Chrome/Edge extension that catches clicked download links |
 | `sdm/cli.py` | headless CLI |
 | `sdm/__main__.py` | entry point (GUI by default, CLI when given a URL) |
 | `build.py`, `run_app.py`, `build_exe.bat`, `SDM.iss`, `SDM.bat` | packaging, installer & launchers |

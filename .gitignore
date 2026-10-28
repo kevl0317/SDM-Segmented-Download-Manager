@@ -15,6 +15,10 @@ dist/
 *.sdmdownload
 *.sdm
 
+# Extension signing material — never publish the private key
+extension/.sdm-crx-key.pem
+extension/.sdm-key-info.json
+
 # Local, private notes — never part of the public project
 /notes/
 *.local.md
