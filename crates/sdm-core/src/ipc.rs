@@ -1,6 +1,7 @@
 //! Token-guarded loopback IPC: the browser native-messaging host hands caught
 //! downloads to the already-running GUI over 127.0.0.1, authenticated by a
-//! per-run token. No traffic interception — just a local hand-off socket.
+//! per-run token, and a second launch of the GUI asks the first to show itself.
+//! No traffic interception — just a local hand-off socket.
 
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
@@ -30,9 +31,20 @@ pub struct CatchRequest {
     pub filename: String,
 }
 
+/// What the running GUI is asked to do.
+#[derive(Debug, Clone)]
+pub enum Request {
+    /// Offer a download the browser caught.
+    Catch(CatchRequest),
+    /// SDM was launched again: show the window instead of starting a second copy.
+    Show,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Wire {
     token: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    show: bool,
     #[serde(flatten)]
     req: CatchRequest,
 }
@@ -81,9 +93,9 @@ pub fn read_pid() -> Option<u32> {
         .ok()
 }
 
-/// Serve caught requests to `tx` forever. Binds loopback only and publishes the
+/// Serve requests to `tx` forever. Binds loopback only and publishes the
 /// port + token for the host to read.
-pub async fn serve(tx: tokio::sync::mpsc::Sender<CatchRequest>) -> io::Result<()> {
+pub async fn serve(tx: tokio::sync::mpsc::Sender<Request>) -> io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
@@ -103,33 +115,91 @@ pub async fn serve(tx: tokio::sync::mpsc::Sender<CatchRequest>) -> io::Result<()
             let (r, mut w) = sock.into_split();
             let mut reader = BufReader::new(r);
             let mut line = String::new();
-            if reader.read_line(&mut line).await.is_ok() {
-                if let Ok(wire) = serde_json::from_str::<Wire>(line.trim()) {
-                    if wire.token == token && !wire.req.url.is_empty() {
-                        let _ = tx.send(wire.req).await;
-                        let _ = w.write_all(b"{\"ok\":true}\n").await;
-                    }
-                }
+            if reader.read_line(&mut line).await.is_err() {
+                return;
             }
+            let Ok(wire) = serde_json::from_str::<Wire>(line.trim()) else {
+                return;
+            };
+            if wire.token != token {
+                return;
+            }
+            let request = if wire.show {
+                Request::Show
+            } else if !wire.req.url.is_empty() {
+                Request::Catch(wire.req)
+            } else {
+                return;
+            };
+            let _ = tx.send(request).await;
+            let _ = w.write_all(b"{\"ok\":true}\n").await;
         });
     }
 }
 
-/// Client side: hand a request to the running GUI. Blocking; used by the host.
+/// Client side: hand a caught download to the running GUI. Blocking; used by
+/// the host.
 pub fn forward(req: &CatchRequest) -> io::Result<()> {
+    send(false, req.clone())
+}
+
+/// Ask an already-running GUI to show its window. True when one answered — the
+/// caller is a second launch and should step aside.
+pub fn show_running() -> bool {
+    send(true, CatchRequest::default()).is_ok()
+}
+
+/// One request to the GUI that published the endpoint; Ok once it acknowledged
+/// (a stale endpoint, or another program now on that port, doesn't count).
+fn send(show: bool, req: CatchRequest) -> io::Result<()> {
     let (port, token) = read_endpoint()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SDM endpoint not published"))?;
-    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut sock = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     sock.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let wire = Wire {
-        token,
-        req: req.clone(),
-    };
-    let mut line =
-        serde_json::to_string(&wire).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let mut line = serde_json::to_string(&Wire { token, show, req })
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     line.push('\n');
     sock.write_all(line.as_bytes())?;
     let mut buf = [0u8; 64];
-    let _ = sock.read(&mut buf); // best-effort ack
-    Ok(())
+    let n = sock.read(&mut buf)?;
+    if std::str::from_utf8(&buf[..n]).is_ok_and(|ack| ack.contains("\"ok\":true")) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SDM did not acknowledge",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_marks_show_requests_and_leaves_catches_unchanged() {
+        let catch = Wire {
+            token: "t".into(),
+            show: false,
+            req: CatchRequest {
+                url: "https://example.com/a.zip".into(),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&catch).unwrap();
+        assert!(!json.contains("show"), "catches keep the original shape: {json}");
+        let back: Wire = serde_json::from_str(&json).unwrap();
+        assert!(!back.show);
+        assert_eq!(back.req.url, "https://example.com/a.zip");
+
+        let show = Wire {
+            token: "t".into(),
+            show: true,
+            req: CatchRequest::default(),
+        };
+        let back: Wire = serde_json::from_str(&serde_json::to_string(&show).unwrap()).unwrap();
+        assert!(back.show);
+        assert!(back.req.url.is_empty());
+    }
 }

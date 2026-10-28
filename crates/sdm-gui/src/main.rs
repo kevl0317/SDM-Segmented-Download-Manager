@@ -131,6 +131,11 @@ pub fn main() -> iced::Result {
     // The browser host starts us with --background to take a catch: stay in the
     // tray so only the "download this?" popup appears.
     let start_hidden = has("--background");
+    // One SDM at a time: launched again (Start menu, desktop), the running copy
+    // shows its window and this one steps aside.
+    if !start_hidden && hand_over_to_running() {
+        return Ok(());
+    }
     iced::daemon(title, update, view)
         .subscription(subscription)
         .theme(|app, _| app.theme.clone())
@@ -165,6 +170,7 @@ enum Message {
     KeyEscape(window::Id),
     KeyNew,
     TrayOpen,
+    Relaunched,
     ExitNow,
     // runtime
     Tick,
@@ -522,7 +528,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::KeyNew => new_download(app),
-        Message::TrayOpen => show_main(app),
+        Message::TrayOpen | Message::Relaunched => show_main(app),
         Message::ExitNow => {
             app.tray = None; // remove the tray icon before the process goes away
             iced::exit()
@@ -910,6 +916,24 @@ fn raise(id: window::Id) -> Task<Message> {
     window::gain_focus(id)
 }
 
+/// Pass our right to take the foreground on to the running GUI, so it can come
+/// to the front: Windows grants it to the app the user just started (the
+/// browser's host, a second launch) but not to one idling in the tray.
+fn grant_foreground_to_gui() {
+    #[cfg(windows)]
+    if let Some(pid) = sdm_core::ipc::read_pid() {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
+        }
+    }
+}
+
+/// A second launch: ask the running SDM to show its window. True if one answered.
+fn hand_over_to_running() -> bool {
+    grant_foreground_to_gui();
+    sdm_core::ipc::show_running()
+}
+
 fn main_settings() -> window::Settings {
     window::Settings {
         size: Size::new(760.0, 620.0),
@@ -1097,14 +1121,20 @@ fn subscription(_app: &App) -> Subscription<Message> {
     ])
 }
 
-// Runs the loopback IPC server and forwards each caught request into the app.
+// Runs the loopback IPC server and forwards each request into the app: caught
+// downloads, and later launches of SDM asking for the window.
 fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(16, |mut output| async move {
         use iced::futures::SinkExt;
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<CatchRequest>(16);
+        use sdm_core::ipc::Request;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Request>(16);
         tokio::spawn(sdm_core::ipc::serve(tx));
         while let Some(req) = rx.recv().await {
-            let _ = output.send(Message::Caught(req)).await;
+            let msg = match req {
+                Request::Catch(req) => Message::Caught(req),
+                Request::Show => Message::Relaunched,
+            };
+            let _ = output.send(msg).await;
         }
     })
 }
@@ -1833,16 +1863,10 @@ mod native_host {
         ))
     }
 
-    /// Forward a catch, first passing our foreground right on to the GUI: the
-    /// browser (the foreground app) started us, so we may, and the popup can
-    /// then come to the front with a plain SetForegroundWindow.
+    /// Forward a catch, first passing our foreground right on to the GUI (the
+    /// browser started us), so the popup can come to the front.
     fn hand_off(req: &CatchRequest) -> std::io::Result<()> {
-        #[cfg(windows)]
-        if let Some(pid) = ipc::read_pid() {
-            unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
-            }
-        }
+        super::grant_foreground_to_gui();
         ipc::forward(req)
     }
 
