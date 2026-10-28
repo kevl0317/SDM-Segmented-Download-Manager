@@ -7,11 +7,13 @@
 //! mechanism any client is entitled to use.
 
 mod engine;
+pub mod ipc;
 mod manager;
 mod types;
 mod util;
 
 pub use engine::{Download, Segment, STATE_SUFFIX, WORKING_SUFFIX};
+pub use ipc::CatchRequest;
 pub use manager::Manager;
 pub use types::{SdmError, Status};
 pub use util::{

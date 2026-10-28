@@ -10,7 +10,7 @@ authors = ["Kevin Liu"]
 repository = "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
