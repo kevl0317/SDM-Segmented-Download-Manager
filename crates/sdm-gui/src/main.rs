@@ -2,16 +2,19 @@
 //! system tray and catches download links from the clipboard and the browser.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use iced::widget::{
     button, canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
 };
 use iced::{
-    window, Alignment, Background, Border, Color, Element, Length, Shadow, Size, Subscription,
-    Task, Theme,
+    window, Alignment, Background, Border, Color, Element, Length, Point, Shadow, Size,
+    Subscription, Task, Theme,
 };
+use serde::{Deserialize, Serialize};
+use tray_icon::menu::{CheckMenuItem, MenuId};
 
 use sdm_core::{human_bytes, human_time, CatchRequest, Download, Manager, Segment, Status};
 
@@ -27,6 +30,10 @@ const ACCENT_HOVER: Color = Color { r: 0.416, g: 0.576, b: 1.0, a: 1.0 }; // #6a
 const TRACK: Color = Color { r: 0.137, g: 0.153, b: 0.184, a: 1.0 }; // #23272f
 const SUCCESS: Color = Color { r: 0.208, g: 0.769, b: 0.420, a: 1.0 }; // #35c46b
 const DANGER: Color = Color { r: 1.0, g: 0.361, b: 0.361, a: 1.0 }; // #ff5c5c
+
+const PROJECT_URL: &str = "https://github.com/kevl0317/SDM-Segmented-Download-Manager";
+const URL_INPUT: &str = "url-input";
+const POPUP_INPUT: &str = "popup-filename";
 
 pub fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,25 +76,118 @@ enum Message {
     PopupFilename(String),
     PopupDownload,
     PopupCancel,
-    // windows & tray
+    // menus (the window's menu bar and the tray share one event stream)
+    MenuItem(MenuId),
+    AboutClose,
+    OpenProject,
+    // windows & keys
+    MainHwnd(Option<isize>),
     CloseRequested(window::Id),
     KeyEscape(window::Id),
+    KeyNew,
     TrayOpen,
-    TrayMenu(tray_icon::menu::MenuId),
     ExitNow,
     // runtime
     Tick,
     Finished,
 }
 
+/// Persisted preferences — the same file and keys the original app used, so an
+/// upgrade keeps the user's choices. Keys we don't own are preserved on save.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+struct Settings {
+    clipboard_monitor: bool,
+    clipboard_all: bool,
+    close_to_tray: bool,
+    show_completed: bool,
+    always_on_top: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            clipboard_monitor: true,
+            clipboard_all: false,
+            close_to_tray: true,
+            show_completed: true,
+            always_on_top: false,
+        }
+    }
+}
+
+/// The toggles that live in the menu bar.
+#[derive(Debug, Clone, Copy)]
+enum Pref {
+    ShowCompleted,
+    AlwaysOnTop,
+    CatchClipboard,
+    CatchAll,
+    KeepInTray,
+}
+
+impl Pref {
+    const ALL: [Pref; 5] = [
+        Pref::ShowCompleted,
+        Pref::AlwaysOnTop,
+        Pref::CatchClipboard,
+        Pref::CatchAll,
+        Pref::KeepInTray,
+    ];
+}
+
+impl Settings {
+    fn path() -> PathBuf {
+        sdm_core::config_dir().join("settings.json")
+    }
+
+    fn load() -> Self {
+        std::fs::read_to_string(Self::path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self) {
+        let path = Self::path();
+        let mut all: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        if let Ok(serde_json::Value::Object(mine)) = serde_json::to_value(self) {
+            all.extend(mine);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&all) {
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    }
+
+    fn flag(&mut self, pref: Pref) -> &mut bool {
+        match pref {
+            Pref::ShowCompleted => &mut self.show_completed,
+            Pref::AlwaysOnTop => &mut self.always_on_top,
+            Pref::CatchClipboard => &mut self.clipboard_monitor,
+            Pref::CatchAll => &mut self.clipboard_all,
+            Pref::KeepInTray => &mut self.close_to_tray,
+        }
+    }
+}
+
 struct App {
     manager: Manager,
+    settings: Settings,
     url_input: String,
     selected: Option<usize>,
     main_window: window::Id,
+    reveal_main: bool,
     popup: Option<Popup>,
+    about: Option<window::Id>,
     last_clip: Option<String>,
     tray: Option<Tray>,
+    menu_bar: Option<MenuBar>,
 }
 
 /// The small "download this?" window shown for a caught link.
@@ -100,8 +200,53 @@ struct Popup {
 
 struct Tray {
     _icon: tray_icon::TrayIcon, // kept alive for the app's lifetime
-    open: tray_icon::menu::MenuId,
-    quit: tray_icon::menu::MenuId,
+    open: MenuId,
+    quit: MenuId,
+}
+
+/// The main window's native menu bar (dark-themed on Windows).
+struct MenuBar {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    menu: tray_icon::menu::Menu,
+    new_download: MenuId,
+    open_folder: MenuId,
+    exit: MenuId,
+    resume_all: MenuId,
+    pause_all: MenuId,
+    clear_completed: MenuId,
+    show_completed: CheckMenuItem,
+    always_on_top: CheckMenuItem,
+    catch_clipboard: CheckMenuItem,
+    catch_all: CheckMenuItem,
+    keep_in_tray: CheckMenuItem,
+    about: MenuId,
+    project: MenuId,
+}
+
+impl MenuBar {
+    fn check(&self, pref: Pref) -> &CheckMenuItem {
+        match pref {
+            Pref::ShowCompleted => &self.show_completed,
+            Pref::AlwaysOnTop => &self.always_on_top,
+            Pref::CatchClipboard => &self.catch_clipboard,
+            Pref::CatchAll => &self.catch_all,
+            Pref::KeepInTray => &self.keep_in_tray,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MenuAction {
+    Open,
+    Quit,
+    NewDownload,
+    OpenFolder,
+    ResumeAll,
+    PauseAll,
+    ClearCompleted,
+    Pref(Pref),
+    About,
+    Project,
 }
 
 impl App {
@@ -114,20 +259,29 @@ impl App {
 fn init(start_hidden: bool) -> (App, Task<Message>) {
     let mut manager = Manager::new(None);
     manager.load_queue();
+    let settings = Settings::load();
     let tray = build_tray();
+    let menu_bar = build_menu_bar(&settings);
     let (main_window, opened) = window::open(main_settings());
     // Only stay hidden when there's a tray icon to come back from.
     let reveal_main = !(start_hidden && tray.is_some());
     let app = App {
         manager,
+        settings,
         url_input: String::new(),
         selected: None,
         main_window,
+        reveal_main,
         popup: None,
+        about: None,
         last_clip: None,
         tray,
+        menu_bar,
     };
-    let task = opened.then(move |id| if reveal_main { reveal(id) } else { darken(id) });
+    // Dark frame first, then attach the menu bar (MainHwnd) — which reveals it.
+    let task = opened.then(|id| {
+        darken(id).chain(window::run_with_handle(id, hwnd_of).map(Message::MainHwnd))
+    });
     (app, task)
 }
 
@@ -181,7 +335,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::OpenFolder => {
             if let Some(d) = app.selected_download() {
-                open_folder(d.dest_dir());
+                open_external(d.dest_dir());
             }
             Task::none()
         }
@@ -198,8 +352,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             open_popup(app, req.url, filename, Some(headers))
         }
         Message::ClipboardUrl(url) => {
-            if app.last_clip.as_deref() == Some(url.as_str()) {
-                return Task::none(); // same link copied again
+            let s = app.settings;
+            let wanted = s.clipboard_monitor
+                && (s.clipboard_all || sdm_core::extract_download_url(&url, false).is_some());
+            if !wanted || app.last_clip.as_deref() == Some(url.as_str()) {
+                return Task::none();
             }
             app.last_clip = Some(url.clone());
             let filename = sdm_core::filename_from_url(&url);
@@ -228,37 +385,51 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::batch([start_task(d), window::close(p.id), show_main(app)])
         }
         Message::PopupCancel => close_popup(app),
+        Message::MenuItem(id) => match classify(app, &id) {
+            Some(action) => run_menu(app, action),
+            None => Task::none(),
+        },
+        Message::AboutClose => close_about(app),
+        Message::OpenProject => {
+            open_external(PROJECT_URL);
+            Task::none()
+        }
+        Message::MainHwnd(hwnd) => {
+            attach_menu(app, hwnd);
+            let level = window::change_level(app.main_window, level_for(app.settings.always_on_top));
+            if app.reveal_main {
+                level.chain(show_main(app))
+            } else {
+                level
+            }
+        }
         Message::CloseRequested(id) => {
             if app.popup.as_ref().map(|p| p.id) == Some(id) {
                 close_popup(app)
-            } else if id == app.main_window && app.tray.is_some() {
-                // Keep running in the tray so downloads and catching continue.
-                window::change_mode(id, window::Mode::Hidden)
+            } else if app.about == Some(id) {
+                close_about(app)
+            } else if id == app.main_window {
+                if app.settings.close_to_tray && app.tray.is_some() {
+                    // Keep running in the tray so downloads and catching continue.
+                    window::change_mode(id, window::Mode::Hidden)
+                } else {
+                    quit(app)
+                }
             } else {
-                quit(app)
+                window::close(id)
             }
         }
         Message::KeyEscape(id) => {
             if app.popup.as_ref().map(|p| p.id) == Some(id) {
                 close_popup(app)
+            } else if app.about == Some(id) {
+                close_about(app)
             } else {
                 Task::none()
             }
         }
+        Message::KeyNew => new_download(app),
         Message::TrayOpen => show_main(app),
-        Message::TrayMenu(id) => {
-            let (open, quit_now) = match &app.tray {
-                Some(t) => (t.open == id, t.quit == id),
-                None => (false, false),
-            };
-            if open {
-                show_main(app)
-            } else if quit_now {
-                quit(app)
-            } else {
-                Task::none()
-            }
-        }
         Message::ExitNow => {
             app.tray = None; // remove the tray icon before the process goes away
             iced::exit()
@@ -268,6 +439,198 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.manager.save_queue();
             Task::none()
         }
+    }
+}
+
+// ---- menus --------------------------------------------------------------
+
+fn classify(app: &App, id: &MenuId) -> Option<MenuAction> {
+    use MenuAction::*;
+    if let Some(t) = &app.tray {
+        if &t.open == id {
+            return Some(Open);
+        }
+        if &t.quit == id {
+            return Some(Quit);
+        }
+    }
+    let m = app.menu_bar.as_ref()?;
+    let items = [
+        (&m.new_download, NewDownload),
+        (&m.open_folder, OpenFolder),
+        (&m.exit, Quit),
+        (&m.resume_all, ResumeAll),
+        (&m.pause_all, PauseAll),
+        (&m.clear_completed, ClearCompleted),
+        (&m.about, About),
+        (&m.project, Project),
+    ];
+    if let Some((_, action)) = items.into_iter().find(|(mid, _)| *mid == id) {
+        return Some(action);
+    }
+    // (the glob import above shadows the `Pref` enum with the variant)
+    crate::Pref::ALL
+        .into_iter()
+        .find(|p| m.check(*p).id() == id)
+        .map(MenuAction::Pref)
+}
+
+fn run_menu(app: &mut App, action: MenuAction) -> Task<Message> {
+    match action {
+        MenuAction::Open => show_main(app),
+        MenuAction::Quit => quit(app),
+        MenuAction::NewDownload => new_download(app),
+        MenuAction::OpenFolder => {
+            open_external(&app.manager.default_dir);
+            Task::none()
+        }
+        MenuAction::ResumeAll => Task::batch(
+            app.manager
+                .downloads
+                .iter()
+                .filter(|d| matches!(d.status(), Status::Paused | Status::Error))
+                .cloned()
+                .map(start_task)
+                .collect::<Vec<_>>(),
+        ),
+        MenuAction::PauseAll => {
+            app.manager.pause_all();
+            Task::none()
+        }
+        MenuAction::ClearCompleted => {
+            let done: Vec<Download> = app
+                .manager
+                .downloads
+                .iter()
+                .filter(|d| d.status() == Status::Complete)
+                .cloned()
+                .collect();
+            for d in &done {
+                if app.selected == Some(d.id()) {
+                    app.selected = None;
+                }
+                app.manager.remove(d, false);
+            }
+            Task::none()
+        }
+        MenuAction::Pref(pref) => {
+            let on = flip(app, pref);
+            match pref {
+                Pref::AlwaysOnTop => window::change_level(app.main_window, level_for(on)),
+                _ => Task::none(),
+            }
+        }
+        MenuAction::About => open_about(app),
+        MenuAction::Project => {
+            open_external(PROJECT_URL);
+            Task::none()
+        }
+    }
+}
+
+/// Flip a setting, mirror it on its menu check mark, and persist it.
+fn flip(app: &mut App, pref: Pref) -> bool {
+    let flag = app.settings.flag(pref);
+    *flag = !*flag;
+    let on = *flag;
+    if let Some(m) = &app.menu_bar {
+        m.check(pref).set_checked(on);
+    }
+    app.settings.save();
+    on
+}
+
+fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
+    use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let ctrl_n = Accelerator::new(Some(Modifiers::CONTROL), Code::KeyN);
+    let new_download = MenuItem::new("&New download", true, Some(ctrl_n));
+    let open_folder = MenuItem::new("&Open downloads folder", true, None);
+    let exit = MenuItem::new("E&xit", true, None);
+    let resume_all = MenuItem::new("&Resume all", true, None);
+    let pause_all = MenuItem::new("&Pause all", true, None);
+    let clear_completed = MenuItem::new("&Clear completed", true, None);
+    let show_completed =
+        CheckMenuItem::new("Show &completed downloads", true, s.show_completed, None);
+    let always_on_top = CheckMenuItem::new("Always on &top", true, s.always_on_top, None);
+    let catch_clipboard =
+        CheckMenuItem::new("Catch &copied links", true, s.clipboard_monitor, None);
+    let catch_all = CheckMenuItem::new("Catch &all link types", true, s.clipboard_all, None);
+    let keep_in_tray = CheckMenuItem::new(
+        "Keep running in the &tray when closed",
+        true,
+        s.close_to_tray,
+        None,
+    );
+    let about = MenuItem::new("&About SDM", true, None);
+    let project = MenuItem::new("&Project page", true, None);
+    let sep = PredefinedMenuItem::separator;
+
+    let menu = Menu::new();
+    menu.append(
+        &Submenu::with_items("&File", true, &[&new_download, &open_folder, &sep(), &exit]).ok()?,
+    )
+    .ok()?;
+    menu.append(
+        &Submenu::with_items(
+            "&Downloads",
+            true,
+            &[&resume_all, &pause_all, &sep(), &clear_completed],
+        )
+        .ok()?,
+    )
+    .ok()?;
+    menu.append(&Submenu::with_items("&View", true, &[&show_completed, &always_on_top]).ok()?)
+        .ok()?;
+    menu.append(
+        &Submenu::with_items(
+            "&Options",
+            true,
+            &[&catch_clipboard, &catch_all, &sep(), &keep_in_tray],
+        )
+        .ok()?,
+    )
+    .ok()?;
+    menu.append(&Submenu::with_items("&Help", true, &[&about, &project]).ok()?)
+        .ok()?;
+
+    Some(MenuBar {
+        menu,
+        new_download: new_download.id().clone(),
+        open_folder: open_folder.id().clone(),
+        exit: exit.id().clone(),
+        resume_all: resume_all.id().clone(),
+        pause_all: pause_all.id().clone(),
+        clear_completed: clear_completed.id().clone(),
+        show_completed,
+        always_on_top,
+        catch_clipboard,
+        catch_all,
+        keep_in_tray,
+        about: about.id().clone(),
+        project: project.id().clone(),
+    })
+}
+
+#[cfg(windows)]
+fn attach_menu(app: &App, hwnd: Option<isize>) {
+    if let (Some(hwnd), Some(m)) = (hwnd, &app.menu_bar) {
+        // SAFETY: the main window's live handle, used on its owning (UI) thread.
+        unsafe {
+            let _ = m
+                .menu
+                .init_for_hwnd_with_theme(hwnd, tray_icon::menu::MenuTheme::Dark);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_menu(_app: &App, _hwnd: Option<isize>) {}
+
+fn hwnd_of(handle: window::raw_window_handle::WindowHandle<'_>) -> Option<isize> {
+    match handle.as_raw() {
+        window::raw_window_handle::RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
     }
 }
 
@@ -298,11 +661,25 @@ fn open_popup(
     opened.then(reveal).chain(focus)
 }
 
-const POPUP_INPUT: &str = "popup-filename";
-
 fn close_popup(app: &mut App) -> Task<Message> {
     match app.popup.take() {
         Some(p) => window::close(p.id),
+        None => Task::none(),
+    }
+}
+
+fn open_about(app: &mut App) -> Task<Message> {
+    if let Some(id) = app.about {
+        return window::gain_focus(id);
+    }
+    let (id, opened) = window::open(about_settings());
+    app.about = Some(id);
+    opened.then(reveal)
+}
+
+fn close_about(app: &mut App) -> Task<Message> {
+    match app.about.take() {
+        Some(id) => window::close(id),
         None => Task::none(),
     }
 }
@@ -312,6 +689,10 @@ fn show_main(app: &App) -> Task<Message> {
     window::change_mode(id, window::Mode::Windowed).chain(window::gain_focus(id))
 }
 
+fn new_download(app: &App) -> Task<Message> {
+    show_main(app).chain(text_input::focus(text_input::Id::new(URL_INPUT)))
+}
+
 fn quit(app: &mut App) -> Task<Message> {
     app.manager.pause_all();
     app.manager.save_queue();
@@ -319,6 +700,14 @@ fn quit(app: &mut App) -> Task<Message> {
     Task::perform(tokio::time::sleep(Duration::from_millis(700)), |_| {
         Message::ExitNow
     })
+}
+
+fn level_for(on_top: bool) -> window::Level {
+    if on_top {
+        window::Level::AlwaysOnTop
+    } else {
+        window::Level::Normal
+    }
 }
 
 /// Windows open hidden; apply the dark frame first, then show, so there's no
@@ -358,6 +747,18 @@ fn popup_settings() -> window::Settings {
     }
 }
 
+fn about_settings() -> window::Settings {
+    window::Settings {
+        size: Size::new(440.0, 214.0),
+        position: window::Position::Centered,
+        resizable: false,
+        visible: false,
+        exit_on_close_request: false,
+        icon: window_icon(),
+        ..window::Settings::default()
+    }
+}
+
 fn window_icon() -> Option<window::Icon> {
     window::icon::from_rgba(logo_rgba(64), 64, 64).ok()
 }
@@ -383,7 +784,7 @@ fn set_dark_titlebar(handle: window::raw_window_handle::WindowHandle<'_>) {
 #[cfg(not(windows))]
 fn set_dark_titlebar(_handle: window::raw_window_handle::WindowHandle<'_>) {}
 
-// ---- tray ---------------------------------------------------------------
+// ---- tray & icon --------------------------------------------------------
 
 fn build_tray() -> Option<Tray> {
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -466,14 +867,21 @@ fn subscription(_app: &App) -> Subscription<Message> {
     Subscription::batch([
         iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
         Subscription::run(ipc_stream),
-        Subscription::run(tray_stream),
+        Subscription::run(menu_stream),
         Subscription::run(clip_stream),
         window::close_requests().map(Message::CloseRequested),
         iced::event::listen_with(|event, _status, id| match event {
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                ..
-            }) => Some(Message::KeyEscape(id)),
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                match key.as_ref() {
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                        Some(Message::KeyEscape(id))
+                    }
+                    iced::keyboard::Key::Character("n") if modifiers.command() => {
+                        Some(Message::KeyNew)
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }),
     ])
@@ -491,15 +899,15 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
     })
 }
 
-// Tray menu clicks and double-clicks on the icon.
-fn tray_stream() -> impl iced::futures::Stream<Item = Message> {
+// Menu clicks (menu bar and tray share muda's channel) and tray double-clicks.
+fn menu_stream() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(8, |mut output| async move {
         use iced::futures::SinkExt;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
         let menu_tx = tx.clone();
         std::thread::spawn(move || {
             while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().recv() {
-                if menu_tx.send(Message::TrayMenu(ev.id)).is_err() {
+                if menu_tx.send(Message::MenuItem(ev.id)).is_err() {
                     break;
                 }
             }
@@ -521,7 +929,8 @@ fn tray_stream() -> impl iced::futures::Stream<Item = Message> {
 
 // Event-driven clipboard catching: the monitor wakes only on WM_CLIPBOARDUPDATE
 // (AddClipboardFormatListener), so nothing is polled. Content already on the
-// clipboard at startup is ignored — only new copies count.
+// clipboard at startup is ignored — only new copies count. Links are filtered
+// against the user's settings in `update`.
 #[cfg(windows)]
 fn clip_stream() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(8, |mut output| async move {
@@ -543,7 +952,7 @@ fn clip_stream() -> impl iced::futures::Stream<Item = Message> {
                     }
                     clipboard_win::get_clipboard_string().ok()
                 });
-                if let Some(url) = text.and_then(|t| sdm_core::extract_download_url(&t, false)) {
+                if let Some(url) = text.and_then(|t| sdm_core::extract_download_url(&t, true)) {
                     if tx.send(url).is_err() {
                         break;
                     }
@@ -581,36 +990,37 @@ fn headers_for(req: &CatchRequest) -> Vec<(String, String)> {
     h
 }
 
+fn open_external(target: impl AsRef<OsStr>) {
+    let target = target.as_ref();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(target).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(target).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+}
+
 // ---- view ---------------------------------------------------------------
 
 fn title(app: &App, id: window::Id) -> String {
-    match &app.popup {
-        Some(p) if p.id == id => "SDM — New download".to_string(),
-        _ => "SDM".to_string(),
+    if app.popup.as_ref().map(|p| p.id) == Some(id) {
+        "SDM — New download".to_string()
+    } else if app.about == Some(id) {
+        "About SDM".to_string()
+    } else {
+        "SDM".to_string()
     }
 }
 
 fn view(app: &App, id: window::Id) -> Element<'_, Message> {
     match &app.popup {
-        Some(p) if p.id == id => popup_view(p),
-        _ => main_view(app),
+        Some(p) if p.id == id => return popup_view(p),
+        _ => {}
     }
-}
-
-fn logo_mark() -> Element<'static, Message> {
-    container(Space::new(0, 0))
-        .width(Length::Fixed(18.0))
-        .height(Length::Fixed(18.0))
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(ACCENT)),
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: 5.0.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    if app.about == Some(id) {
+        return about_view();
+    }
+    main_view(app)
 }
 
 fn main_view(app: &App) -> Element<'_, Message> {
@@ -638,7 +1048,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
     };
 
     let header = row![
-        logo_mark(),
+        logo(20.0),
         text("SDM").size(20.0).font(semibold()),
         Space::with_width(Length::Fill),
         header_right,
@@ -648,6 +1058,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
 
     let add = row![
         text_input("Paste a link to download…", &app.url_input)
+            .id(text_input::Id::new(URL_INPUT))
             .on_input(Message::UrlChanged)
             .on_submit(Message::Add)
             .padding([12.0, 14.0])
@@ -661,20 +1072,20 @@ fn main_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(10);
 
+    let visible: Vec<&Download> = app
+        .manager
+        .downloads
+        .iter()
+        .filter(|d| app.settings.show_completed || d.status() != Status::Complete)
+        .collect();
+
     let body: Element<Message> = if app.manager.downloads.is_empty() {
-        container(
-            text("Paste a link above to start a download.")
-                .size(14.0)
-                .color(MUTED),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .into()
+        empty_state("Paste a link above to start a download.")
+    } else if visible.is_empty() {
+        empty_state("Nothing in progress — completed downloads are hidden (View ▸ Show completed).")
     } else {
         let mut list = column![].spacing(10);
-        for d in &app.manager.downloads {
+        for d in visible {
             list = list.push(download_card(app.selected == Some(d.id()), d));
         }
         scrollable(list).height(Length::Fill).into()
@@ -687,9 +1098,18 @@ fn main_view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
+fn empty_state(message: &'static str) -> Element<'static, Message> {
+    container(text(message).size(14.0).color(MUTED))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+}
+
 fn popup_view(p: &Popup) -> Element<'_, Message> {
     let header = row![
-        logo_mark(),
+        logo(20.0),
         text("New download").size(16.0).font(semibold()),
     ]
     .spacing(10)
@@ -727,6 +1147,44 @@ fn popup_view(p: &Popup) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+fn about_view() -> Element<'static, Message> {
+    let header = row![
+        logo(34.0),
+        column![
+            text("SDM").size(20.0).font(semibold()),
+            text(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                .size(12.0)
+                .color(MUTED),
+        ]
+        .spacing(2),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let blurb = text(
+        "A fast segmented download manager. It splits each file across parallel \
+         connections and catches download links from your clipboard and browser.",
+    )
+    .size(13.0);
+
+    let actions = row![
+        Space::with_width(Length::Fill),
+        ghost("Project page", Message::OpenProject),
+        button(text("Close").size(14.0))
+            .on_press(Message::AboutClose)
+            .padding([8.0, 18.0])
+            .style(accent_button),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    container(column![header, blurb, actions].spacing(16))
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn middle_ellipsis(s: &str, max: usize) -> String {
@@ -830,15 +1288,6 @@ fn meta_label(d: &Download) -> String {
         Status::Queued => "Queued".to_string(),
         Status::Probing => "Connecting…".to_string(),
     }
-}
-
-fn open_folder(dir: &Path) {
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(dir).spawn();
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(dir).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
 // ---- fonts & theme ------------------------------------------------------
@@ -1100,7 +1549,56 @@ mod native_host {
     pub fn unregister() {}
 }
 
-// ---- per-segment progress bar (canvas) ---------------------------------
+// ---- canvas: logo mark & per-segment progress bar ----------------------
+
+/// The app mark, drawn as vectors so it stays crisp at any size and matches
+/// the window/tray icon.
+struct Logo;
+
+impl<Message> canvas::Program<Message> for Logo {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        use canvas::Path;
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let s = bounds.width.min(bounds.height);
+        let mid = s / 2.0;
+        let square = Path::rounded_rectangle(Point::ORIGIN, Size::new(s, s), (s * 0.22).into());
+        frame.fill(&square, ACCENT);
+        let shaft = Path::rectangle(
+            Point::new(mid - s * 0.075, s * 0.20),
+            Size::new(s * 0.15, s * 0.36),
+        );
+        let head = Path::new(|b| {
+            b.move_to(Point::new(mid - s * 0.24, s * 0.42));
+            b.line_to(Point::new(mid + s * 0.24, s * 0.42));
+            b.line_to(Point::new(mid, s * 0.72));
+            b.close();
+        });
+        let tray = Path::rectangle(
+            Point::new(mid - s * 0.28, s * 0.79),
+            Size::new(s * 0.56, s * 0.07),
+        );
+        for part in [&shaft, &head, &tray] {
+            frame.fill(part, Color::WHITE);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+fn logo(size: f32) -> Element<'static, Message> {
+    canvas(Logo)
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into()
+}
 
 struct SegmentBar {
     segments: Vec<Segment>,
@@ -1120,7 +1618,6 @@ impl<Message> canvas::Program<Message> for SegmentBar {
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        use iced::Point;
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
         let gap = 2.0;

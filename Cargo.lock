@@ -3945,6 +3945,7 @@ dependencies = [
  "clipboard-win",
  "iced",
  "sdm-core",
+ "serde",
  "serde_json",
  "tokio",
  "tray-icon",
