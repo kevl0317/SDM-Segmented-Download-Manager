@@ -1,0 +1,16 @@
+[package]
+name = "sdm-gui"
+description = "SDM desktop GUI (iced): download queue, live per-segment progress, pause/resume."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sdm-gui"
+path = "src/main.rs"
+
+[dependencies]
+sdm-core = { path = "../sdm-core" }
+iced = { version = "0.13", features = ["tokio", "canvas"] }
