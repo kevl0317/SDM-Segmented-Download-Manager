@@ -22,7 +22,8 @@ fn main() {
     let mut next = || parts.next().unwrap_or(0);
     let (major, minor, patch) = (next(), next(), next());
     let author = std::env::var("CARGO_PKG_AUTHORS").unwrap_or_default();
-    // Same strings the v1.x executable carried.
+    // Product name and version match the installer's: release signing checks
+    // both against the release (SignPath artifact configurations).
     let script = format!(
         r#"#pragma code_page(65001)
 1 ICON "{icon}"
@@ -41,12 +42,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "{author}"
             VALUE "FileDescription", "SDM - Segmented Download Manager"
-            VALUE "FileVersion", "{major}.{minor}.{patch}.0"
+            VALUE "FileVersion", "{version}"
             VALUE "InternalName", "SDM"
             VALUE "LegalCopyright", "Copyright (c) 2026 {author}. MIT License."
             VALUE "OriginalFilename", "SDM.exe"
-            VALUE "ProductName", "SDM - Segmented Download Manager"
-            VALUE "ProductVersion", "{major}.{minor}.{patch}.0"
+            VALUE "ProductName", "SDM"
+            VALUE "ProductVersion", "{version}"
         END
     END
     BLOCK "VarFileInfo"

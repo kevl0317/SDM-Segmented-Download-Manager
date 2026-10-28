@@ -1,0 +1,13 @@
+<!-- SignPath artifact configuration "installer": the Inno Setup installer,
+     uploaded by the Build workflow as a ZIP with SDM-Setup-<version>.exe at its
+     root. Paste into the SignPath project; the workflow passes the version. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="SDM-Setup-${version}.exe" product-name="SDM" product-version="${version}">
+      <authenticode-sign hash-algorithm="sha256" />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

@@ -31,12 +31,12 @@ browser, and a tray icon that keeps it running in the background.
 Download the latest **`SDM-Setup-<version>.exe`** from the
 [Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
 page and run it. It installs SDM per-user (no admin) on 64-bit Windows 10 or 11,
-with a Start-Menu shortcut and an uninstaller, and registers the browser host.
-Installing over 1.x upgrades it in place; your download list and settings carry
-over.
+with a Start-Menu shortcut and an uninstaller, and (unless you untick it) the
+browser host the extension needs. Installing over 1.x upgrades it in place;
+your download list and settings carry over.
 
-The installer is unsigned, so Windows SmartScreen may warn on first run
-(More info → Run anyway).
+The installer is unsigned for now, so Windows SmartScreen may warn on first run
+(More info → Run anyway). See the [code signing policy](CODE_SIGNING_POLICY.md).
 
 ## Using SDM
 
@@ -75,8 +75,9 @@ iscc SDM.iss                       # -> dist/SDM-Setup-<version>.exe (needs the 
 cargo test --workspace
 ```
 
-`scripts\build-installer.ps1` does the app and the installer in one step, and
-signs them once signing is set up (below).
+`scripts\build-installer.ps1` does the app and the installer in one step;
+`-SignCommand "<signtool command>"` signs a local build with a certificate of
+your own.
 
 CLI: `sdm <url> [-o/--out <dir>] [-n/--connections <N>] [-f/--filename <name>]`.
 Ctrl+C stops the download.
@@ -84,49 +85,27 @@ Ctrl+C stops the download.
 The desktop app targets Windows. The engine and CLI are plain Rust and should
 build on macOS and Linux, but only Windows is tested so far.
 
-### Signing
+### Release builds and signing
 
-An unsigned installer gets Windows SmartScreen's "Windows protected your PC"
-warning. A signed one shows your verified name as the publisher, and
-SmartScreen builds reputation for that signing identity, so the warning stops
-once enough people have installed releases signed with it. Signing alone
-doesn't clear it on day one: Microsoft says that takes weeks and hundreds of
-installs, and EV certificates no longer skip it. Sign every release with the
-same identity so the reputation carries over.
+Release builds come from [GitHub Actions](.github/workflows/build.yml): pushing
+a version tag (`v2.0.2`, matching `SDM.iss`) builds SDM on GitHub's runners and
+attaches the installer to that tag's release (a draft, if there isn't one yet).
+Pull requests and `main` get the tests and an unsigned installer as a run
+artifact.
 
-For an individual in the US or Canada, Microsoft's
-[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
-(about $9.99 a month) is the simplest route:
+Signing goes through the [SignPath Foundation](https://signpath.org/), free for
+open-source projects; see the [code signing policy](CODE_SIGNING_POLICY.md).
+Once the project is approved, the SignPath project needs the GitHub.com trusted
+build system, the artifact configurations in [`.github/signpath`](.github/signpath)
+(slugs `app` and `installer`), a release signing policy with manual approval,
+and a CI user. The repository then needs the secret `SIGNPATH_API_TOKEN` (that
+CI user's token) and the variables `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG`; from then on, tag
+builds sign SDM.exe and the installer, each after you approve it in SignPath.
 
-1. In the Azure portal, on a paid subscription, create an Artifact Signing
-   account (Basic tier).
-2. Complete identity validation as an individual (allow a few business days).
-3. Create a Public Trust certificate profile, and give yourself the
-   Certificate Profile Signer role on the account.
-4. Install the signing client and the Azure CLI:
-   `winget install -e --id Microsoft.Azure.ArtifactSigningClientTools` and
-   `winget install -e --id Microsoft.AzureCLI` (the client also needs the
-   .NET 8 runtime).
-5. Save a `metadata.json` outside the repository:
-
-   ```json
-   {
-     "Endpoint": "https://eus.codesigning.azure.net",
-     "CodeSigningAccountName": "<your account>",
-     "CertificateProfileName": "<your certificate profile>"
-   }
-   ```
-
-   The endpoint must match your account's region (`eus` is East US).
-6. Sign in with `az login`, then build:
-   `.\scripts\build-installer.ps1 -SignMetadata C:\path\to\metadata.json`.
-   It signs SDM.exe, the installer and the uninstaller, timestamped, and
-   prints each signature's status.
-
-Elsewhere, an OV certificate from a certificate authority works with the same
-script through `-SignCommand`. Open-source projects can also apply to the
-[SignPath Foundation](https://signpath.org/) for free signing; it requires
-builds from CI, and the publisher shown is the foundation, not you.
+A signed installer can still get a SmartScreen warning at first. SmartScreen
+builds reputation for the signing identity as people install releases;
+Microsoft says that takes weeks and hundreds of installs.
 
 ## How it works
 

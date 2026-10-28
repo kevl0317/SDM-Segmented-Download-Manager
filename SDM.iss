@@ -5,9 +5,10 @@
 ; with a Start-Menu shortcut, optional desktop shortcut, and an uninstaller.
 ; The AppId is the one v1.x used, so installing over v1.x upgrades it in place.
 ;
-; Signed builds (scripts\build-installer.ps1 does all of this): compile with
+; Signed local builds (scripts\build-installer.ps1 -SignCommand does this):
 ;   iscc /DSIGN "/Ssdmsign=<sign command; $f = the file, $q = a quote>" SDM.iss
-; to sign SDM.exe, the installer and the uninstaller with the same identity.
+; signs SDM.exe, the installer and the uninstaller with the same identity.
+; Release builds are signed by GitHub Actions instead (.github/workflows).
 
 #define MyAppName "SDM"
 #define MyAppVersion "2.0.1"
@@ -54,6 +55,7 @@ SignedUninstaller=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "browserhost"; Description: "Let the SDM extension for Chrome and Edge hand downloads to SDM (registers a native-messaging host for your account)"; GroupDescription: "Browser integration:"
 
 [Files]
 Source: "target\release\sdm-gui.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion{#SignFlag}
@@ -65,7 +67,7 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-host"; Flags: runhidden
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-host"; Flags: runhidden; Tasks: browserhost
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]

@@ -1,0 +1,131 @@
+# Builds SDM on GitHub-hosted Windows runners. Pull requests and main get the
+# tests and an unsigned installer (kept as a run artifact). A version tag (v*)
+# gets the release build: SDM.exe and the installer are signed through the
+# SignPath Foundation, then the installer is attached to the tag's release.
+#
+# Signing turns on once these repository settings exist (CODE_SIGNING_POLICY.md):
+#   secret    SIGNPATH_API_TOKEN
+#   variables SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+#             SIGNPATH_SIGNING_POLICY_SLUG
+# Until then tag builds attach an unsigned installer. No caches anywhere:
+# signed builds must come from the repository's source alone.
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # attach the installer to the release (tag builds)
+    env:
+      SIGN: ${{ github.ref_type == 'tag' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the version
+        id: version
+        run: |
+          $v = (Select-String -Path SDM.iss -Pattern '#define MyAppVersion "([^"]+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match the version in SDM.iss ($v)"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build SDM.exe
+        run: cargo build --release -p sdm-gui --locked
+
+      - name: Stage SDM.exe for signing
+        if: env.SIGN == 'true'
+        run: |
+          New-Item -ItemType Directory -Force unsigned-app | Out-Null
+          Copy-Item target\release\sdm-gui.exe unsigned-app\
+
+      - name: Upload SDM.exe for signing
+        id: upload-app
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdm-exe-unsigned
+          path: unsigned-app
+
+      - name: Sign SDM.exe
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600 # each request waits for a manual approval
+          output-artifact-directory: signed-app
+
+      - name: Use the signed SDM.exe
+        if: env.SIGN == 'true'
+        run: Copy-Item signed-app\sdm-gui.exe target\release\sdm-gui.exe -Force
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q SDM.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item "dist\SDM-Setup-${{ steps.version.outputs.version }}.exe" installer\
+
+      - name: Upload the installer
+        id: upload-installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdm-setup
+          path: installer
+
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installer
+
+      - name: Attach the installer to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $dir = if ($env:SIGN -eq "true") { "signed-installer" } else { "installer" }
+          $file = "$dir\SDM-Setup-$env:VERSION.exe"
+          gh release view "v$env:VERSION" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "v$env:VERSION" $file --clobber
+          } else {
+            gh release create "v$env:VERSION" $file --draft --title "SDM v$env:VERSION" --notes "Release notes to come."
+          }

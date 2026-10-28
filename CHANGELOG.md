@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **The installer asks before connecting the browser extension.** Registering
+  the native-messaging host the Chrome/Edge extension needs is now a
+  setup option (on by default) instead of happening silently.
+- **Release builds come from GitHub Actions**, ready to be signed through the
+  SignPath Foundation once the project is approved (see the code signing
+  policy).
+- The app's version info now matches the installer's (product name "SDM").
+
 ## v2.0.1 — 2026-10-28
 
 ### Fixed
