@@ -285,7 +285,7 @@ class AddDialog(tk.Toplevel):
         self.bind("<Escape>", lambda e: self.destroy())
         self.update_idletasks()
         if standalone:
-            self._center_screen()
+            self.bind("<Map>", self._center_on_map)   # center once shown; before map the WM ignores it
             try:
                 self.attributes("-topmost", True)   # the catch popup floats above everything
                 self.lift()
@@ -295,6 +295,11 @@ class AddDialog(tk.Toplevel):
         else:
             self._center(master)
         self.grab_set()
+
+    def _center_on_map(self, event):
+        if event.widget is self:
+            self.unbind("<Map>")
+            self._center_screen()
 
     def _center(self, master):
         try:
@@ -307,9 +312,12 @@ class AddDialog(tk.Toplevel):
     def _center_screen(self):
         try:
             self.update_idletasks()
-            w, h = self.winfo_width(), self.winfo_height()
+            w = self.winfo_reqwidth() or self.winfo_width()
+            h = self.winfo_reqheight() or self.winfo_height()
             sw, sh = primary_screen_size(self)
-            self.geometry(f"+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}")
+            x = max(0, (sw - w) // 2)
+            y = max(0, (sh - h) // 2)
+            self.geometry("%dx%d+%d+%d" % (w, h, x, y))   # full WxH+X+Y; "+x+y" alone isn't applied
         except tk.TclError:
             pass
 
