@@ -6,11 +6,12 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use iced::alignment::Horizontal;
 use iced::widget::{
     button, canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
 };
 use iced::{
-    window, Alignment, Background, Border, Color, Element, Length, Point, Shadow, Size,
+    window, Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Size,
     Subscription, Task, Theme,
 };
 use serde::{Deserialize, Serialize};
@@ -18,18 +19,95 @@ use tray_icon::menu::{CheckMenuItem, MenuId};
 
 use sdm_core::{human_bytes, human_time, CatchRequest, Download, Manager, Segment, Status};
 
-// ---- palette (modern dark) ---------------------------------------------
-const BG: Color = Color { r: 0.059, g: 0.067, b: 0.082, a: 1.0 }; // #0f1115
-const SURFACE: Color = Color { r: 0.094, g: 0.106, b: 0.133, a: 1.0 }; // #181b22
-const SURFACE_SEL: Color = Color { r: 0.122, g: 0.137, b: 0.173, a: 1.0 }; // #1f232c
-const BORDER: Color = Color { r: 0.149, g: 0.169, b: 0.208, a: 1.0 }; // #262b35
-const TEXT: Color = Color { r: 0.910, g: 0.918, b: 0.929, a: 1.0 }; // #e8eaed
-const MUTED: Color = Color { r: 0.541, g: 0.565, b: 0.612, a: 1.0 }; // #8a909c
-const ACCENT: Color = Color { r: 0.302, g: 0.498, b: 1.0, a: 1.0 }; // #4d7fff
-const ACCENT_HOVER: Color = Color { r: 0.416, g: 0.576, b: 1.0, a: 1.0 }; // #6a93ff
-const TRACK: Color = Color { r: 0.137, g: 0.153, b: 0.184, a: 1.0 }; // #23272f
-const SUCCESS: Color = Color { r: 0.208, g: 0.769, b: 0.420, a: 1.0 }; // #35c46b
-const DANGER: Color = Color { r: 1.0, g: 0.361, b: 0.361, a: 1.0 }; // #ff5c5c
+// ---- palettes -----------------------------------------------------------
+
+/// Every color the UI uses; one set per theme.
+struct Colors {
+    bg: Color,
+    surface: Color,
+    surface_sel: Color,
+    border: Color,
+    text: Color,
+    muted: Color,
+    accent: Color,
+    accent_hover: Color,
+    track: Color,
+    success: Color,
+    danger: Color,
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: 1.0,
+    }
+}
+
+const DARK: Colors = Colors {
+    bg: rgb(0x0f, 0x11, 0x15),
+    surface: rgb(0x18, 0x1b, 0x22),
+    surface_sel: rgb(0x1f, 0x23, 0x2c),
+    border: rgb(0x26, 0x2b, 0x35),
+    text: rgb(0xe8, 0xea, 0xed),
+    muted: rgb(0x8a, 0x90, 0x9c),
+    accent: rgb(0x4d, 0x7f, 0xff),
+    accent_hover: rgb(0x6a, 0x93, 0xff),
+    track: rgb(0x23, 0x27, 0x2f),
+    success: rgb(0x35, 0xc4, 0x6b),
+    danger: rgb(0xff, 0x5c, 0x5c),
+};
+
+const LIGHT: Colors = Colors {
+    bg: rgb(0xf4, 0xf5, 0xf7),
+    surface: rgb(0xff, 0xff, 0xff),
+    surface_sel: rgb(0xed, 0xf2, 0xff),
+    border: rgb(0xe2, 0xe5, 0xea),
+    text: rgb(0x17, 0x19, 0x1d),
+    muted: rgb(0x6b, 0x72, 0x80),
+    accent: rgb(0x2f, 0x6b, 0xff),
+    accent_hover: rgb(0x4a, 0x7f, 0xff),
+    track: rgb(0xe6, 0xe9, 0xef),
+    success: rgb(0x18, 0xa0, 0x58),
+    danger: rgb(0xe5, 0x48, 0x4d),
+};
+
+/// The palette behind whichever SDM theme iced hands a style function.
+fn colors(theme: &Theme) -> &'static Colors {
+    if theme.palette().background.r < 0.5 {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    fn is_dark(self) -> bool {
+        self == ThemeMode::Dark
+    }
+}
+
+fn sdm_theme(mode: ThemeMode) -> Theme {
+    let (name, c, mut p) = match mode {
+        ThemeMode::Dark => ("SDM Dark", &DARK, Theme::Dark.palette()),
+        ThemeMode::Light => ("SDM Light", &LIGHT, Theme::Light.palette()),
+    };
+    p.background = c.bg;
+    p.text = c.text;
+    p.primary = c.accent;
+    p.success = c.success;
+    p.danger = c.danger;
+    Theme::custom(name.to_string(), p)
+}
 
 const PROJECT_URL: &str = "https://github.com/kevl0317/SDM-Segmented-Download-Manager";
 const URL_INPUT: &str = "url-input";
@@ -55,8 +133,9 @@ pub fn main() -> iced::Result {
     let start_hidden = has("--background");
     iced::daemon(title, update, view)
         .subscription(subscription)
-        .theme(|_, _| sdm_theme())
+        .theme(|app, _| app.theme.clone())
         .default_font(ui_font())
+        .antialiasing(true) // smooth canvas curves (the logo, rounded shapes)
         .run_with(move || init(start_hidden))
 }
 
@@ -102,6 +181,7 @@ struct Settings {
     close_to_tray: bool,
     show_completed: bool,
     always_on_top: bool,
+    theme: ThemeMode,
 }
 
 impl Default for Settings {
@@ -112,11 +192,12 @@ impl Default for Settings {
             close_to_tray: true,
             show_completed: true,
             always_on_top: false,
+            theme: ThemeMode::Dark,
         }
     }
 }
 
-/// The toggles that live in the menu bar.
+/// The on/off toggles that live in the menu bar.
 #[derive(Debug, Clone, Copy)]
 enum Pref {
     ShowCompleted,
@@ -179,9 +260,11 @@ impl Settings {
 struct App {
     manager: Manager,
     settings: Settings,
+    theme: Theme,
     url_input: String,
     selected: Option<usize>,
     main_window: window::Id,
+    main_hwnd: Option<isize>,
     reveal_main: bool,
     popup: Option<Popup>,
     about: Option<window::Id>,
@@ -204,7 +287,7 @@ struct Tray {
     quit: MenuId,
 }
 
-/// The main window's native menu bar (dark-themed on Windows).
+/// The main window's native menu bar (themed to match on Windows).
 struct MenuBar {
     #[cfg_attr(not(windows), allow(dead_code))]
     menu: tray_icon::menu::Menu,
@@ -216,6 +299,8 @@ struct MenuBar {
     clear_completed: MenuId,
     show_completed: CheckMenuItem,
     always_on_top: CheckMenuItem,
+    theme_dark: CheckMenuItem,
+    theme_light: CheckMenuItem,
     catch_clipboard: CheckMenuItem,
     catch_all: CheckMenuItem,
     keep_in_tray: CheckMenuItem,
@@ -245,6 +330,7 @@ enum MenuAction {
     PauseAll,
     ClearCompleted,
     Pref(Pref),
+    SetTheme(ThemeMode),
     About,
     Project,
 }
@@ -253,6 +339,10 @@ impl App {
     fn selected_download(&self) -> Option<&Download> {
         let id = self.selected?;
         self.manager.downloads.iter().find(|d| d.id() == id)
+    }
+
+    fn dark(&self) -> bool {
+        self.settings.theme.is_dark()
     }
 }
 
@@ -265,12 +355,15 @@ fn init(start_hidden: bool) -> (App, Task<Message>) {
     let (main_window, opened) = window::open(main_settings());
     // Only stay hidden when there's a tray icon to come back from.
     let reveal_main = !(start_hidden && tray.is_some());
+    let dark = settings.theme.is_dark();
     let app = App {
         manager,
         settings,
+        theme: sdm_theme(settings.theme),
         url_input: String::new(),
         selected: None,
         main_window,
+        main_hwnd: None,
         reveal_main,
         popup: None,
         about: None,
@@ -278,9 +371,9 @@ fn init(start_hidden: bool) -> (App, Task<Message>) {
         tray,
         menu_bar,
     };
-    // Dark frame first, then attach the menu bar (MainHwnd) — which reveals it.
-    let task = opened.then(|id| {
-        darken(id).chain(window::run_with_handle(id, hwnd_of).map(Message::MainHwnd))
+    // Theme the frame first, then attach the menu bar (MainHwnd) — which reveals it.
+    let task = opened.then(move |id| {
+        frame(id, dark).chain(window::run_with_handle(id, hwnd_of).map(Message::MainHwnd))
     });
     (app, task)
 }
@@ -302,11 +395,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             let d = app.manager.add(&url, None, None, 8, None);
             app.url_input.clear();
-            app.selected = Some(d.id());
             start_task(d)
         }
         Message::Select(id) => {
-            app.selected = Some(id);
+            // Clicking a row expands it; clicking it again folds it back up.
+            app.selected = if app.selected == Some(id) { None } else { Some(id) };
             Task::none()
         }
         Message::Resume => {
@@ -380,7 +473,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 8,
                 p.headers.clone(),
             );
-            app.selected = Some(d.id());
             // Only now does the full window come forward.
             Task::batch([start_task(d), window::close(p.id), show_main(app)])
         }
@@ -395,7 +487,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::MainHwnd(hwnd) => {
-            attach_menu(app, hwnd);
+            app.main_hwnd = hwnd;
+            attach_menu(app);
             let level = window::change_level(app.main_window, level_for(app.settings.always_on_top));
             if app.reveal_main {
                 level.chain(show_main(app))
@@ -462,6 +555,8 @@ fn classify(app: &App, id: &MenuId) -> Option<MenuAction> {
         (&m.resume_all, ResumeAll),
         (&m.pause_all, PauseAll),
         (&m.clear_completed, ClearCompleted),
+        (m.theme_dark.id(), SetTheme(ThemeMode::Dark)),
+        (m.theme_light.id(), SetTheme(ThemeMode::Light)),
         (&m.about, About),
         (&m.project, Project),
     ];
@@ -520,6 +615,7 @@ fn run_menu(app: &mut App, action: MenuAction) -> Task<Message> {
                 _ => Task::none(),
             }
         }
+        MenuAction::SetTheme(mode) => set_theme(app, mode),
         MenuAction::About => open_about(app),
         MenuAction::Project => {
             open_external(PROJECT_URL);
@@ -540,6 +636,32 @@ fn flip(app: &mut App, pref: Pref) -> bool {
     on
 }
 
+/// Switch themes everywhere: the iced theme, the menu check marks, and the
+/// native chrome (title bars and menu bar) of every open window.
+fn set_theme(app: &mut App, mode: ThemeMode) -> Task<Message> {
+    app.settings.theme = mode;
+    app.settings.save();
+    app.theme = sdm_theme(mode);
+    if let Some(m) = &app.menu_bar {
+        m.theme_dark.set_checked(mode == ThemeMode::Dark);
+        m.theme_light.set_checked(mode == ThemeMode::Light);
+    }
+    theme_menu_bar(app);
+    let dark = mode.is_dark();
+    let windows = [
+        Some(app.main_window),
+        app.popup.as_ref().map(|p| p.id),
+        app.about,
+    ];
+    Task::batch(
+        windows
+            .into_iter()
+            .flatten()
+            .map(|id| reframe(id, dark))
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
     use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -553,6 +675,8 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
     let show_completed =
         CheckMenuItem::new("Show &completed downloads", true, s.show_completed, None);
     let always_on_top = CheckMenuItem::new("Always on &top", true, s.always_on_top, None);
+    let theme_dark = CheckMenuItem::new("&Dark", true, s.theme == ThemeMode::Dark, None);
+    let theme_light = CheckMenuItem::new("&Light", true, s.theme == ThemeMode::Light, None);
     let catch_clipboard =
         CheckMenuItem::new("Catch &copied links", true, s.clipboard_monitor, None);
     let catch_all = CheckMenuItem::new("Catch &all link types", true, s.clipboard_all, None);
@@ -566,6 +690,7 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
     let project = MenuItem::new("&Project page", true, None);
     let sep = PredefinedMenuItem::separator;
 
+    let theme = Submenu::with_items("T&heme", true, &[&theme_dark, &theme_light]).ok()?;
     let menu = Menu::new();
     menu.append(
         &Submenu::with_items("&File", true, &[&new_download, &open_folder, &sep(), &exit]).ok()?,
@@ -580,8 +705,15 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
         .ok()?,
     )
     .ok()?;
-    menu.append(&Submenu::with_items("&View", true, &[&show_completed, &always_on_top]).ok()?)
-        .ok()?;
+    menu.append(
+        &Submenu::with_items(
+            "&View",
+            true,
+            &[&show_completed, &always_on_top, &sep(), &theme],
+        )
+        .ok()?,
+    )
+    .ok()?;
     menu.append(
         &Submenu::with_items(
             "&Options",
@@ -604,6 +736,8 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
         clear_completed: clear_completed.id().clone(),
         show_completed,
         always_on_top,
+        theme_dark,
+        theme_light,
         catch_clipboard,
         catch_all,
         keep_in_tray,
@@ -613,19 +747,39 @@ fn build_menu_bar(s: &Settings) -> Option<MenuBar> {
 }
 
 #[cfg(windows)]
-fn attach_menu(app: &App, hwnd: Option<isize>) {
-    if let (Some(hwnd), Some(m)) = (hwnd, &app.menu_bar) {
+fn menu_theme(app: &App) -> tray_icon::menu::MenuTheme {
+    if app.dark() {
+        tray_icon::menu::MenuTheme::Dark
+    } else {
+        tray_icon::menu::MenuTheme::Light
+    }
+}
+
+#[cfg(windows)]
+fn attach_menu(app: &App) {
+    if let (Some(hwnd), Some(m)) = (app.main_hwnd, &app.menu_bar) {
         // SAFETY: the main window's live handle, used on its owning (UI) thread.
         unsafe {
-            let _ = m
-                .menu
-                .init_for_hwnd_with_theme(hwnd, tray_icon::menu::MenuTheme::Dark);
+            let _ = m.menu.init_for_hwnd_with_theme(hwnd, menu_theme(app));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn theme_menu_bar(app: &App) {
+    if let (Some(hwnd), Some(m)) = (app.main_hwnd, &app.menu_bar) {
+        // SAFETY: as above.
+        unsafe {
+            let _ = m.menu.set_theme_for_hwnd(hwnd, menu_theme(app));
         }
     }
 }
 
 #[cfg(not(windows))]
-fn attach_menu(_app: &App, _hwnd: Option<isize>) {}
+fn attach_menu(_app: &App) {}
+
+#[cfg(not(windows))]
+fn theme_menu_bar(_app: &App) {}
 
 fn hwnd_of(handle: window::raw_window_handle::WindowHandle<'_>) -> Option<isize> {
     match handle.as_raw() {
@@ -649,7 +803,7 @@ fn open_popup(
         p.url = url;
         p.filename = filename;
         p.headers = headers;
-        return window::gain_focus(p.id).chain(focus);
+        return raise(p.id).chain(focus);
     }
     let (id, opened) = window::open(popup_settings());
     app.popup = Some(Popup {
@@ -658,7 +812,8 @@ fn open_popup(
         filename,
         headers,
     });
-    opened.then(reveal).chain(focus)
+    let dark = app.dark();
+    opened.then(move |id| reveal(id, dark)).chain(focus)
 }
 
 fn close_popup(app: &mut App) -> Task<Message> {
@@ -670,11 +825,12 @@ fn close_popup(app: &mut App) -> Task<Message> {
 
 fn open_about(app: &mut App) -> Task<Message> {
     if let Some(id) = app.about {
-        return window::gain_focus(id);
+        return raise(id);
     }
     let (id, opened) = window::open(about_settings());
     app.about = Some(id);
-    opened.then(reveal)
+    let dark = app.dark();
+    opened.then(move |id| reveal(id, dark))
 }
 
 fn close_about(app: &mut App) -> Task<Message> {
@@ -686,7 +842,9 @@ fn close_about(app: &mut App) -> Task<Message> {
 
 fn show_main(app: &App) -> Task<Message> {
     let id = app.main_window;
-    window::change_mode(id, window::Mode::Windowed).chain(window::gain_focus(id))
+    window::change_mode(id, window::Mode::Windowed)
+        .chain(window::minimize(id, false))
+        .chain(raise(id))
 }
 
 fn new_download(app: &App) -> Task<Message> {
@@ -710,16 +868,46 @@ fn level_for(on_top: bool) -> window::Level {
     }
 }
 
-/// Windows open hidden; apply the dark frame first, then show, so there's no
-/// light-title-bar flash.
-fn reveal(id: window::Id) -> Task<Message> {
-    darken(id)
+/// Windows open hidden; theme the title bar first, then show, so there's no
+/// wrong-color flash.
+fn reveal(id: window::Id, dark: bool) -> Task<Message> {
+    frame(id, dark)
         .chain(window::change_mode(id, window::Mode::Windowed))
-        .chain(window::gain_focus(id))
+        .chain(raise(id))
 }
 
-fn darken(id: window::Id) -> Task<Message> {
-    window::run_with_handle(id, set_dark_titlebar).discard()
+fn frame(id: window::Id, dark: bool) -> Task<Message> {
+    window::run_with_handle(id, move |handle| set_titlebar(handle, dark)).discard()
+}
+
+/// Re-theme an open window's title bar. DWM takes the new color asynchronously
+/// (a repaint right away still shows the old one), so give it a moment first.
+fn reframe(id: window::Id, dark: bool) -> Task<Message> {
+    frame(id, dark)
+        .chain(Task::perform(tokio::time::sleep(Duration::from_millis(80)), |_| ()).discard())
+        .chain(window::run_with_handle(id, repaint_caption).discard())
+}
+
+/// Bring a window forward. On Windows that's a plain SetForegroundWindow, not
+/// iced's gain_focus: winit forces the foreground by faking an Alt keypress,
+/// which can land in another app or arm our menu bar — and the UI stalls while
+/// the menu is armed. Windows still grants it after the user's own input (tray,
+/// popup) and when the browser host hands its right over.
+#[cfg(windows)]
+fn raise(id: window::Id) -> Task<Message> {
+    window::run_with_handle(id, |handle| {
+        if let Some(hwnd) = hwnd_of(handle) {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+            }
+        }
+    })
+    .discard()
+}
+
+#[cfg(not(windows))]
+fn raise(id: window::Id) -> Task<Message> {
+    window::gain_focus(id)
 }
 
 fn main_settings() -> window::Settings {
@@ -763,18 +951,19 @@ fn window_icon() -> Option<window::Icon> {
     window::icon::from_rgba(logo_rgba(64), 64, 64).ok()
 }
 
+/// Light or dark native title bar (DWM immersive dark mode).
 #[cfg(windows)]
-fn set_dark_titlebar(handle: window::raw_window_handle::WindowHandle<'_>) {
+fn set_titlebar(handle: window::raw_window_handle::WindowHandle<'_>, dark: bool) {
     use window::raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: i32 = 20;
     if let RawWindowHandle::Win32(h) = handle.as_raw() {
-        let enabled: i32 = 1;
+        let value: i32 = dark as i32;
         unsafe {
             DwmSetWindowAttribute(
                 h.hwnd.get(),
                 DWMWA_USE_IMMERSIVE_DARK_MODE,
-                &enabled as *const i32 as *const std::ffi::c_void,
+                &value as *const i32 as *const std::ffi::c_void,
                 std::mem::size_of::<i32>() as u32,
             );
         }
@@ -782,7 +971,28 @@ fn set_dark_titlebar(handle: window::raw_window_handle::WindowHandle<'_>) {
 }
 
 #[cfg(not(windows))]
-fn set_dark_titlebar(_handle: window::raw_window_handle::WindowHandle<'_>) {}
+fn set_titlebar(_handle: window::raw_window_handle::WindowHandle<'_>, _dark: bool) {}
+
+/// Redraw a visible caption by flipping its active state and back — the only
+/// thing that makes DWM repaint it with a new title-bar color.
+#[cfg(windows)]
+fn repaint_caption(handle: window::raw_window_handle::WindowHandle<'_>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, GetForegroundWindow, IsWindowVisible, WM_NCACTIVATE,
+    };
+    if let Some(hwnd) = hwnd_of(handle) {
+        unsafe {
+            if IsWindowVisible(hwnd) != 0 {
+                let active = (GetForegroundWindow() == hwnd) as usize;
+                DefWindowProcW(hwnd, WM_NCACTIVATE, active ^ 1, 0);
+                DefWindowProcW(hwnd, WM_NCACTIVATE, active, 0);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn repaint_caption(_handle: window::raw_window_handle::WindowHandle<'_>) {}
 
 // ---- tray & icon --------------------------------------------------------
 
@@ -1023,6 +1233,10 @@ fn view(app: &App, id: window::Id) -> Element<'_, Message> {
     main_view(app)
 }
 
+/// The list's scrollbar lives in this right-hand gutter, so the header and
+/// link bar are inset by the same amount and every right edge lines up.
+const GUTTER: f32 = 12.0;
+
 fn main_view(app: &App) -> Element<'_, Message> {
     let active = app
         .manager
@@ -1041,7 +1255,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
     let header_right: Element<Message> = if active > 0 {
         text(format!("↓ {}/s", human_bytes(Some(total))))
             .size(13.0)
-            .color(ACCENT)
+            .style(text_accent)
             .into()
     } else {
         Space::with_width(Length::Fixed(0.0)).into()
@@ -1072,38 +1286,208 @@ fn main_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(10);
 
-    let visible: Vec<&Download> = app
+    let inset = Padding {
+        right: GUTTER,
+        ..Padding::ZERO
+    };
+
+    // Newest first, with anything actively downloading pinned to the top, so
+    // what's in flight is always visible without scrolling.
+    let mut visible: Vec<&Download> = app
         .manager
         .downloads
         .iter()
+        .rev()
         .filter(|d| app.settings.show_completed || d.status() != Status::Complete)
         .collect();
+    visible.sort_by_key(|d| !matches!(d.status(), Status::Running | Status::Probing));
 
     let body: Element<Message> = if app.manager.downloads.is_empty() {
         empty_state("Paste a link above to start a download.")
     } else if visible.is_empty() {
         empty_state("Nothing in progress — completed downloads are hidden (View ▸ Show completed).")
     } else {
-        let mut list = column![].spacing(10);
+        let mut list = column![].spacing(8);
         for d in visible {
-            list = list.push(download_card(app.selected == Some(d.id()), d));
+            list = list.push(download_item(app.selected == Some(d.id()), d));
         }
-        scrollable(list).height(Length::Fill).into()
+        scrollable(list)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new()
+                    .width(6.0)
+                    .scroller_width(6.0)
+                    .spacing(GUTTER - 6.0),
+            ))
+            .style(scrollbar_style)
+            .height(Length::Fill)
+            .into()
     };
 
-    container(column![header, add, body].spacing(18))
-        .padding(24)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    container(
+        column![
+            container(header).padding(inset),
+            container(add).padding(inset),
+            body,
+        ]
+        .spacing(18),
+    )
+    .padding(Padding {
+        top: 24.0,
+        right: 24.0 - GUTTER,
+        bottom: 24.0,
+        left: 24.0,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn empty_state(message: &'static str) -> Element<'static, Message> {
-    container(text(message).size(14.0).color(MUTED))
+    container(text(message).size(14.0).style(text_muted))
         .width(Length::Fill)
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
+        .into()
+}
+
+/// A slim row by default; the full card while downloading or when clicked.
+fn download_item(selected: bool, d: &Download) -> Element<'static, Message> {
+    if selected || matches!(d.status(), Status::Running | Status::Probing) {
+        full_card(selected, d)
+    } else {
+        compact_row(d)
+    }
+}
+
+fn compact_row(d: &Download) -> Element<'static, Message> {
+    let id = d.id();
+    let status = d.status();
+    let size = |n: Option<u64>| n.map(|b| human_bytes(Some(b))).unwrap_or_default();
+    let (detail, label, style): (String, &str, fn(&Theme) -> text::Style) = match status {
+        Status::Complete => (size(d.size()), "Done", text_success),
+        Status::Error => (size(d.size()), "Failed", text_danger),
+        Status::Paused => (
+            format!("{} / {}", human_bytes(Some(d.downloaded())), size(d.size())),
+            "Paused",
+            text_muted,
+        ),
+        Status::Queued => (size(d.size()), "Queued", text_muted),
+        Status::Probing | Status::Running => (size(d.size()), "", text_accent),
+    };
+
+    let r = row![
+        status_dot(status),
+        container(
+            text(d.filename())
+                .size(14.0)
+                .wrapping(text::Wrapping::None)
+        )
+        .width(Length::Fill)
+        .clip(true),
+        text(detail).size(12.0).style(text_muted),
+        container(text(label).size(12.0).style(style))
+            .width(Length::Fixed(52.0))
+            .align_x(Horizontal::Right),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    mouse_area(
+        container(r)
+            .padding([10.0, 16.0])
+            .width(Length::Fill)
+            .style(card_style(false, 10.0)),
+    )
+    .on_press(Message::Select(id))
+    .into()
+}
+
+fn full_card(selected: bool, d: &Download) -> Element<'static, Message> {
+    let id = d.id();
+    let status = d.status();
+    let pct = d.progress();
+
+    let right: Element<Message> = match status {
+        Status::Complete => text("Done").size(13.0).style(text_success).into(),
+        Status::Error => text("Failed").size(13.0).style(text_danger).into(),
+        Status::Running | Status::Paused => match pct {
+            Some(p) => text(format!("{:.0}%", p * 100.0))
+                .size(13.0)
+                .style(if status == Status::Running { text_accent } else { text_muted })
+                .into(),
+            None => Space::with_width(Length::Fixed(0.0)).into(),
+        },
+        _ => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+
+    let name_row = row![
+        container(
+            text(d.filename())
+                .size(15.0)
+                .wrapping(text::Wrapping::None)
+        )
+        .width(Length::Fill)
+        .clip(true),
+        right,
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let bar = canvas(SegmentBar {
+        segments: d.segments_snapshot(),
+        size: d.size(),
+        progress: pct,
+        done: status == Status::Complete,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(8.0));
+
+    let mut meta_row = row![text(meta_label(d)).size(12.0).style(text_muted)].align_y(Alignment::Center);
+    if selected {
+        meta_row = meta_row.push(Space::with_width(Length::Fill));
+        match status {
+            Status::Running | Status::Probing | Status::Queued => {
+                meta_row = meta_row.push(ghost("Pause", Message::Pause));
+            }
+            Status::Paused | Status::Error => {
+                meta_row = meta_row.push(ghost("Resume", Message::Resume));
+            }
+            Status::Complete => {}
+        }
+        meta_row = meta_row.push(ghost("Open", Message::OpenFolder));
+        meta_row = meta_row.push(ghost("Remove", Message::Remove));
+    }
+
+    let card = container(column![name_row, bar, meta_row].spacing(11))
+        .padding(16)
+        .width(Length::Fill)
+        .style(card_style(selected, 12.0));
+
+    mouse_area(card).on_press(Message::Select(id)).into()
+}
+
+fn status_dot(status: Status) -> Element<'static, Message> {
+    container(Space::new(0, 0))
+        .width(Length::Fixed(8.0))
+        .height(Length::Fixed(8.0))
+        .style(move |theme: &Theme| {
+            let c = colors(theme);
+            let color = match status {
+                Status::Complete => c.success,
+                Status::Error => c.danger,
+                Status::Running | Status::Probing => c.accent,
+                Status::Paused | Status::Queued => c.muted,
+            };
+            container::Style {
+                background: Some(Background::Color(color)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }
+        })
         .into()
 }
 
@@ -1137,7 +1521,7 @@ fn popup_view(p: &Popup) -> Element<'_, Message> {
     container(
         column![
             header,
-            text(middle_ellipsis(&p.url, 72)).size(12.0).color(MUTED),
+            text(middle_ellipsis(&p.url, 72)).size(12.0).style(text_muted),
             name,
             actions,
         ]
@@ -1156,7 +1540,7 @@ fn about_view() -> Element<'static, Message> {
             text("SDM").size(20.0).font(semibold()),
             text(format!("Version {}", env!("CARGO_PKG_VERSION")))
                 .size(12.0)
-                .color(MUTED),
+                .style(text_muted),
         ]
         .spacing(2),
     ]
@@ -1198,64 +1582,6 @@ fn middle_ellipsis(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
-fn download_card(selected: bool, d: &Download) -> Element<'static, Message> {
-    let id = d.id();
-    let status = d.status();
-    let pct = d.progress();
-
-    let right: Element<Message> = match status {
-        Status::Complete => text("Done").size(13.0).color(SUCCESS).into(),
-        Status::Error => text("Failed").size(13.0).color(DANGER).into(),
-        Status::Running | Status::Paused => match pct {
-            Some(p) => text(format!("{:.0}%", p * 100.0))
-                .size(13.0)
-                .color(if status == Status::Running { ACCENT } else { MUTED })
-                .into(),
-            None => Space::with_width(Length::Fixed(0.0)).into(),
-        },
-        _ => Space::with_width(Length::Fixed(0.0)).into(),
-    };
-
-    let name_row = row![
-        text(d.filename()).size(15.0),
-        Space::with_width(Length::Fill),
-        right,
-    ]
-    .align_y(Alignment::Center);
-
-    let bar = canvas(SegmentBar {
-        segments: d.segments_snapshot(),
-        size: d.size(),
-        progress: pct,
-        done: status == Status::Complete,
-    })
-    .width(Length::Fill)
-    .height(Length::Fixed(8.0));
-
-    let mut meta_row = row![text(meta_label(d)).size(12.0).color(MUTED)].align_y(Alignment::Center);
-    if selected {
-        meta_row = meta_row.push(Space::with_width(Length::Fill));
-        match status {
-            Status::Running | Status::Probing | Status::Queued => {
-                meta_row = meta_row.push(ghost("Pause", Message::Pause));
-            }
-            Status::Paused | Status::Error => {
-                meta_row = meta_row.push(ghost("Resume", Message::Resume));
-            }
-            Status::Complete => {}
-        }
-        meta_row = meta_row.push(ghost("Open", Message::OpenFolder));
-        meta_row = meta_row.push(ghost("Remove", Message::Remove));
-    }
-
-    let card = container(column![name_row, bar, meta_row].spacing(11))
-        .padding(16)
-        .width(Length::Fill)
-        .style(card_style(selected));
-
-    mouse_area(card).on_press(Message::Select(id)).into()
-}
-
 fn ghost(label: &'static str, msg: Message) -> Element<'static, Message> {
     button(text(label).size(12.0))
         .on_press(msg)
@@ -1290,7 +1616,7 @@ fn meta_label(d: &Download) -> String {
     }
 }
 
-// ---- fonts & theme ------------------------------------------------------
+// ---- fonts --------------------------------------------------------------
 
 // A UI font with full CJK coverage on Windows (filenames are often non-Latin);
 // elsewhere iced's default, which falls back through the system fonts.
@@ -1309,55 +1635,74 @@ fn semibold() -> iced::Font {
     f
 }
 
-fn sdm_theme() -> Theme {
-    let mut p = Theme::Dark.palette();
-    p.background = BG;
-    p.text = TEXT;
-    p.primary = ACCENT;
-    p.success = SUCCESS;
-    p.danger = DANGER;
-    Theme::custom("SDM".to_string(), p)
-}
+// ---- widget styles (all colors come from the active theme) ------------
 
-// ---- widget styles ------------------------------------------------------
-
-fn card_style(selected: bool) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        text_color: Some(TEXT),
-        background: Some(Background::Color(if selected { SURFACE_SEL } else { SURFACE })),
-        border: Border {
-            color: if selected { ACCENT } else { BORDER },
-            width: 1.0,
-            radius: 12.0.into(),
-        },
-        shadow: Shadow::default(),
+fn text_muted(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors(theme).muted),
     }
 }
 
-fn input_style(_: &Theme, status: text_input::Status) -> text_input::Style {
+fn text_accent(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors(theme).accent),
+    }
+}
+
+fn text_success(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors(theme).success),
+    }
+}
+
+fn text_danger(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors(theme).danger),
+    }
+}
+
+fn card_style(selected: bool, radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let c = colors(theme);
+        container::Style {
+            text_color: Some(c.text),
+            background: Some(Background::Color(if selected { c.surface_sel } else { c.surface })),
+            border: Border {
+                color: if selected { c.accent } else { c.border },
+                width: 1.0,
+                radius: radius.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+fn input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let c = colors(theme);
     let border_color = match status {
-        text_input::Status::Focused => ACCENT,
-        _ => BORDER,
+        text_input::Status::Focused => c.accent,
+        _ => c.border,
     };
     text_input::Style {
-        background: Background::Color(SURFACE),
+        background: Background::Color(c.surface),
         border: Border {
             color: border_color,
             width: 1.0,
             radius: 10.0.into(),
         },
-        icon: MUTED,
-        placeholder: MUTED,
-        value: TEXT,
-        selection: Color { a: 0.3, ..ACCENT },
+        icon: c.muted,
+        placeholder: c.muted,
+        value: c.text,
+        selection: Color { a: 0.3, ..c.accent },
     }
 }
 
-fn accent_button(_: &Theme, status: button::Status) -> button::Style {
+fn accent_button(theme: &Theme, status: button::Status) -> button::Style {
+    let c = colors(theme);
     let bg = match status {
-        button::Status::Hovered => ACCENT_HOVER,
-        button::Status::Disabled => Color { a: 0.4, ..ACCENT },
-        _ => ACCENT,
+        button::Status::Hovered => c.accent_hover,
+        button::Status::Disabled => Color { a: 0.4, ..c.accent },
+        _ => c.accent,
     };
     button::Style {
         background: Some(Background::Color(bg)),
@@ -1371,10 +1716,11 @@ fn accent_button(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-fn ghost_button(_: &Theme, status: button::Status) -> button::Style {
+fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
+    let c = colors(theme);
     let (bg, tc) = match status {
-        button::Status::Hovered => (Some(Background::Color(SURFACE_SEL)), TEXT),
-        _ => (None, MUTED),
+        button::Status::Hovered => (Some(Background::Color(c.surface_sel)), c.text),
+        _ => (None, c.muted),
     };
     button::Style {
         background: bg,
@@ -1385,6 +1731,42 @@ fn ghost_button(_: &Theme, status: button::Status) -> button::Style {
             radius: 8.0.into(),
         },
         shadow: Shadow::default(),
+    }
+}
+
+/// A thin, quiet scrollbar that brightens while hovered or dragged.
+fn scrollbar_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let c = colors(theme);
+    let engaged = matches!(
+        status,
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered: true,
+            ..
+        } | scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged: true,
+            ..
+        }
+    );
+    let rail = || scrollable::Rail {
+        background: None,
+        border: Border::default(),
+        scroller: scrollable::Scroller {
+            color: if engaged {
+                c.muted
+            } else {
+                Color { a: 0.45, ..c.muted }
+            },
+            border: Border {
+                radius: 3.0.into(),
+                ..Border::default()
+            },
+        },
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail(),
+        horizontal_rail: rail(),
+        gap: None,
     }
 }
 
@@ -1433,7 +1815,7 @@ mod native_host {
     }
 
     fn forward_with_launch(req: &CatchRequest) -> std::io::Result<()> {
-        if ipc::forward(req).is_ok() {
+        if hand_off(req).is_ok() {
             return Ok(());
         }
         // Not running — launch the GUI and retry until its IPC server is up
@@ -1441,7 +1823,7 @@ mod native_host {
         launch_gui();
         for _ in 0..40 {
             std::thread::sleep(std::time::Duration::from_millis(200));
-            if ipc::forward(req).is_ok() {
+            if hand_off(req).is_ok() {
                 return Ok(());
             }
         }
@@ -1449,6 +1831,19 @@ mod native_host {
             std::io::ErrorKind::Other,
             "SDM unreachable",
         ))
+    }
+
+    /// Forward a catch, first passing our foreground right on to the GUI: the
+    /// browser (the foreground app) started us, so we may, and the popup can
+    /// then come to the front with a plain SetForegroundWindow.
+    fn hand_off(req: &CatchRequest) -> std::io::Result<()> {
+        #[cfg(windows)]
+        if let Some(pid) = ipc::read_pid() {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
+            }
+        }
+        ipc::forward(req)
     }
 
     /// Start the GUI in the tray (only the catch popup should appear) as an
@@ -1562,7 +1957,7 @@ impl<Message> canvas::Program<Message> for Logo {
         &self,
         _state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -1571,7 +1966,7 @@ impl<Message> canvas::Program<Message> for Logo {
         let s = bounds.width.min(bounds.height);
         let mid = s / 2.0;
         let square = Path::rounded_rectangle(Point::ORIGIN, Size::new(s, s), (s * 0.22).into());
-        frame.fill(&square, ACCENT);
+        frame.fill(&square, colors(theme).accent);
         let shaft = Path::rectangle(
             Point::new(mid - s * 0.075, s * 0.20),
             Size::new(s * 0.15, s * 0.36),
@@ -1614,10 +2009,11 @@ impl<Message> canvas::Program<Message> for SegmentBar {
         &self,
         _state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
+        let c = colors(theme);
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
         let gap = 2.0;
@@ -1629,26 +2025,26 @@ impl<Message> canvas::Program<Message> for SegmentBar {
                 let mut x = 0.0;
                 for s in &self.segments {
                     let sw = (avail * (s.length() as f32 / size as f32)).max(2.0);
-                    frame.fill_rectangle(Point::new(x, 0.0), Size::new(sw, h), TRACK);
+                    frame.fill_rectangle(Point::new(x, 0.0), Size::new(sw, h), c.track);
                     let frac = if s.length() > 0 {
                         s.downloaded as f32 / s.length() as f32
                     } else {
                         0.0
                     };
                     if frac > 0.0 {
-                        let col = if s.done() { SUCCESS } else { ACCENT };
+                        let col = if s.done() { c.success } else { c.accent };
                         frame.fill_rectangle(Point::new(x, 0.0), Size::new(sw * frac, h), col);
                     }
                     x += sw + gap;
                 }
             }
             _ => {
-                frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(w.max(1.0), h), TRACK);
+                frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(w.max(1.0), h), c.track);
                 if let Some(p) = self.progress {
                     frame.fill_rectangle(
                         Point::new(0.0, 0.0),
                         Size::new((w * p as f32).max(0.0), h),
-                        if self.done { SUCCESS } else { ACCENT },
+                        if self.done { c.success } else { c.accent },
                     );
                 }
             }

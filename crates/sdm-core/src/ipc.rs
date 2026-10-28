@@ -13,6 +13,7 @@ use crate::util::config_dir;
 
 const PORT_FILE: &str = "ipc-port";
 const TOKEN_FILE: &str = "ipc-token";
+const PID_FILE: &str = "ipc-pid";
 
 /// A download the browser asked SDM to take over, with the context needed to
 /// fetch it as the browser would (cookies / User-Agent / referrer).
@@ -70,6 +71,16 @@ pub fn read_endpoint() -> Option<(u16, String)> {
     }
 }
 
+/// The process id of the GUI that published the endpoint, so the browser host
+/// can let it take the foreground for a catch (Windows' foreground lock).
+pub fn read_pid() -> Option<u32> {
+    std::fs::read_to_string(config_dir().join(PID_FILE))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Serve caught requests to `tx` forever. Binds loopback only and publishes the
 /// port + token for the host to read.
 pub async fn serve(tx: tokio::sync::mpsc::Sender<CatchRequest>) -> io::Result<()> {
@@ -77,6 +88,8 @@ pub async fn serve(tx: tokio::sync::mpsc::Sender<CatchRequest>) -> io::Result<()
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let token = gen_token();
+    // The pid goes first, so whenever the endpoint is readable it's current.
+    let _ = std::fs::write(config_dir().join(PID_FILE), std::process::id().to_string());
     let _ = std::fs::write(port_path(), port.to_string());
     let _ = std::fs::write(token_path(), &token);
     loop {
