@@ -75,11 +75,58 @@ iscc SDM.iss                       # -> dist/SDM-Setup-<version>.exe (needs the 
 cargo test --workspace
 ```
 
+`scripts\build-installer.ps1` does the app and the installer in one step, and
+signs them once signing is set up (below).
+
 CLI: `sdm <url> [-o/--out <dir>] [-n/--connections <N>] [-f/--filename <name>]`.
 Ctrl+C stops the download.
 
 The desktop app targets Windows. The engine and CLI are plain Rust and should
 build on macOS and Linux, but only Windows is tested so far.
+
+### Signing
+
+An unsigned installer gets Windows SmartScreen's "Windows protected your PC"
+warning. A signed one shows your verified name as the publisher, and
+SmartScreen builds reputation for that signing identity, so the warning stops
+once enough people have installed releases signed with it. Signing alone
+doesn't clear it on day one: Microsoft says that takes weeks and hundreds of
+installs, and EV certificates no longer skip it. Sign every release with the
+same identity so the reputation carries over.
+
+For an individual in the US or Canada, Microsoft's
+[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
+(about $9.99 a month) is the simplest route:
+
+1. In the Azure portal, on a paid subscription, create an Artifact Signing
+   account (Basic tier).
+2. Complete identity validation as an individual (allow a few business days).
+3. Create a Public Trust certificate profile, and give yourself the
+   Certificate Profile Signer role on the account.
+4. Install the signing client and the Azure CLI:
+   `winget install -e --id Microsoft.Azure.ArtifactSigningClientTools` and
+   `winget install -e --id Microsoft.AzureCLI` (the client also needs the
+   .NET 8 runtime).
+5. Save a `metadata.json` outside the repository:
+
+   ```json
+   {
+     "Endpoint": "https://eus.codesigning.azure.net",
+     "CodeSigningAccountName": "<your account>",
+     "CertificateProfileName": "<your certificate profile>"
+   }
+   ```
+
+   The endpoint must match your account's region (`eus` is East US).
+6. Sign in with `az login`, then build:
+   `.\scripts\build-installer.ps1 -SignMetadata C:\path\to\metadata.json`.
+   It signs SDM.exe, the installer and the uninstaller, timestamped, and
+   prints each signature's status.
+
+Elsewhere, an OV certificate from a certificate authority works with the same
+script through `-SignCommand`. Open-source projects can also apply to the
+[SignPath Foundation](https://signpath.org/) for free signing; it requires
+builds from CI, and the publisher shown is the foundation, not you.
 
 ## How it works
 
