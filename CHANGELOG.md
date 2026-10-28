@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.0.0 — 2026-10-28
+
+A complete rewrite in Rust: one native executable with no Python runtime, and a
+5 MB installer. Segmented downloads, pause/resume, clipboard and browser
+catching, and the tray work as in 1.3.0; what's different is below.
+
+### Added
+- **Dark and light themes** (View → Theme). The title bar and the menu bar
+  switch along with the window.
+- **Compact download rows.** A download is one slim row; it expands into a card
+  with the live per-segment bar while it runs, or when you click it.
+- **Native menu bar** — File, Downloads, View, Options, Help — and an About window.
+- **One SDM at a time.** Launching SDM while it's running in the tray brings
+  back its window instead of starting a second copy.
+- **Options → "Remove also deletes the file".** Off by default, so Remove only
+  takes the entry off the list; turn it on to delete the downloaded file (or a
+  partial download's data) too.
+
+### Changed
+- **The catch popup comes to the front once** and steps aside when you switch to
+  another window, instead of staying on top. Long links fit on one line.
+- **Uninstalling closes a running SDM first**, so no files are left behind.
+- **Installing over 1.x upgrades it in place**; the download list and settings
+  carry over.
+- **Downloads are always saved to your Downloads folder**; the popup has no
+  "Save to" field yet.
+
+### Removed
+- **FTP downloads** — 2.0.0 downloads over HTTP and HTTPS.
+- **The `sdm.pyz` zipapp.** The headless CLI now builds from source
+  (`cargo build --release -p sdm-cli`).
+
 ## v1.3.0 — 2026-10-28
 
 ### Added
