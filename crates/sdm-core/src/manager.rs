@@ -120,16 +120,23 @@ impl Manager {
                     e.connections,
                     None,
                 );
+                let size = e
+                    .size
+                    .or_else(|| std::fs::metadata(&e.final_path).ok().map(|m| m.len()));
+                dl.restore_complete(size, PathBuf::from(&e.final_path));
                 d = Some(dl);
             }
             let dl = d.unwrap_or_else(|| {
-                Download::new(
+                // Nothing on disk to resume; keep it as a fresh queued job.
+                let dl = Download::new(
                     &e.url,
                     e.dest_dir.as_str(),
                     Some(&e.filename),
                     e.connections,
                     None,
-                )
+                );
+                dl.restore_size(e.size);
+                dl
             });
             self.downloads.push(dl);
         }

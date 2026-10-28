@@ -168,6 +168,24 @@ impl Download {
         Ok(d)
     }
 
+    /// Restore a finished job from the queue file (its sidecar is gone).
+    pub(crate) fn restore_complete(&self, size: Option<u64>, path: PathBuf) {
+        {
+            let mut st = self.inner.lock();
+            st.size = size;
+            st.stream_downloaded = size.unwrap_or(0);
+            st.segments.clear();
+            st.completed = Some(path);
+            st.status = Status::Complete;
+        }
+        self.inner.probed.store(true, Ordering::SeqCst);
+    }
+
+    /// Remember a queued job's last-known size (nothing on disk to resume).
+    pub(crate) fn restore_size(&self, size: Option<u64>) {
+        self.inner.lock().size = size;
+    }
+
     // ---- accessors (each takes the lock briefly) ------------------------
     pub fn url(&self) -> String {
         self.inner.lock().url.clone()
@@ -212,8 +230,10 @@ impl Download {
         self.inner.state_path()
     }
     pub fn output_path(&self) -> PathBuf {
-        let st = self.inner.lock();
-        st.completed.clone().unwrap_or_else(|| self.inner.final_path())
+        // Drop the guard before final_path() locks again — std's Mutex isn't
+        // reentrant, and holding it here deadlocked Manager::save_queue().
+        let completed = self.inner.lock().completed.clone();
+        completed.unwrap_or_else(|| self.inner.final_path())
     }
     /// Stable identity across clones (same underlying job).
     pub fn id(&self) -> usize {
@@ -321,6 +341,9 @@ impl Inner {
 
     // ---- orchestration --------------------------------------------------
     async fn run(self: Arc<Inner>) {
+        if self.lock().status == Status::Complete {
+            return; // already finished — nothing to do
+        }
         self.stop.store(false, Ordering::SeqCst);
         {
             let mut st = self.lock();
@@ -815,5 +838,95 @@ impl Inner {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dl(size: u64, conns: usize) -> Download {
+        let d = Download::new(
+            "https://example.com/file.bin",
+            std::env::temp_dir(),
+            None,
+            conns,
+            None,
+        );
+        {
+            let mut st = d.inner.lock();
+            st.size = Some(size);
+            st.supports_ranges = true;
+        }
+        d
+    }
+
+    fn assert_tiles(segs: &[Segment], size: u64) {
+        let mut sorted = segs.to_vec();
+        sorted.sort_by_key(|s| s.start);
+        let mut expect = 0;
+        for s in &sorted {
+            assert_eq!(s.start, expect, "gap or overlap at byte {}", s.start);
+            assert!(s.end >= s.start);
+            expect = s.end + 1;
+        }
+        assert_eq!(expect, size, "segments must cover the whole file");
+    }
+
+    #[test]
+    fn output_path_does_not_deadlock_before_completion() {
+        // Regression: output_path() re-locked the state mutex it already held,
+        // which froze the GUI on its first add. Fail fast instead of hanging.
+        let d = dl(1, 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(d.output_path());
+        });
+        let p = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("output_path() deadlocked");
+        assert!(p.ends_with("file.bin"));
+    }
+
+    #[test]
+    fn plan_tiles_the_file() {
+        let size = 10 * MIN_SEGMENT + 12_345;
+        let d = dl(size, 4);
+        d.inner.plan_segments();
+        let segs = d.segments_snapshot();
+        assert_eq!(segs.len(), 4);
+        assert_tiles(&segs, size);
+    }
+
+    #[test]
+    fn small_files_use_a_single_segment() {
+        let d = dl(MIN_SEGMENT / 2, 8);
+        d.inner.plan_segments();
+        assert_eq!(d.segment_count(), 1);
+    }
+
+    #[test]
+    fn steal_splits_the_largest_remainder_and_keeps_coverage() {
+        let size = 10 * MIN_SEGMENT;
+        let d = dl(size, 4);
+        d.inner.plan_segments();
+        for _ in 0..4 {
+            assert!(d.inner.claim_segment().is_some());
+        }
+        let stolen = d.inner.claim_segment().expect("an idle worker should steal");
+        assert_eq!(stolen, 4);
+        let segs = d.segments_snapshot();
+        assert_eq!(segs.len(), 5);
+        assert_tiles(&segs, size);
+    }
+
+    #[test]
+    fn no_steal_below_the_split_threshold() {
+        let d = dl(4 * MIN_SEGMENT, 4); // four 1 MiB segments, each < SPLIT_MIN
+        d.inner.plan_segments();
+        for _ in 0..4 {
+            d.inner.claim_segment();
+        }
+        assert!(d.inner.claim_segment().is_none());
     }
 }
