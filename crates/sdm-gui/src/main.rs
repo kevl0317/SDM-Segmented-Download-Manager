@@ -1,4 +1,5 @@
-//! SDM desktop GUI (iced) — a clean, modern, card-based download manager.
+//! SDM desktop GUI (iced) — a clean, modern download manager that lives in the
+//! system tray and catches download links from the clipboard and the browser.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::path::Path;
@@ -8,10 +9,11 @@ use iced::widget::{
     button, canvas, column, container, mouse_area, row, scrollable, text, text_input, Space,
 };
 use iced::{
-    Alignment, Background, Border, Color, Element, Length, Shadow, Size, Subscription, Task, Theme,
+    window, Alignment, Background, Border, Color, Element, Length, Shadow, Size, Subscription,
+    Task, Theme,
 };
 
-use sdm_core::{human_bytes, human_time, Download, Manager, Segment, Status};
+use sdm_core::{human_bytes, human_time, CatchRequest, Download, Manager, Segment, Status};
 
 // ---- palette (modern dark) ---------------------------------------------
 const BG: Color = Color { r: 0.059, g: 0.067, b: 0.082, a: 1.0 }; // #0f1115
@@ -28,32 +30,32 @@ const DANGER: Color = Color { r: 1.0, g: 0.361, b: 0.361, a: 1.0 }; // #ff5c5c
 
 pub fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--register-host") {
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    if has("--register-host") {
         native_host::register();
         return Ok(());
     }
-    if args.iter().any(|a| a == "--unregister-host") {
+    if has("--unregister-host") {
         native_host::unregister();
         return Ok(());
     }
-    if args
-        .iter()
-        .any(|a| a == "--native-host" || a.starts_with("chrome-extension://"))
-    {
+    if has("--native-host") || args.iter().any(|a| a.starts_with("chrome-extension://")) {
         native_host::run();
         return Ok(());
     }
-    apply_dark_titlebar_async();
-    iced::application("SDM", update, view)
+    // The browser host starts us with --background to take a catch: stay in the
+    // tray so only the "download this?" popup appears.
+    let start_hidden = has("--background");
+    iced::daemon(title, update, view)
         .subscription(subscription)
-        .theme(|_| sdm_theme())
+        .theme(|_, _| sdm_theme())
         .default_font(ui_font())
-        .window_size(Size::new(760.0, 620.0))
-        .run_with(init)
+        .run_with(move || init(start_hidden))
 }
 
 #[derive(Debug, Clone)]
 enum Message {
+    // main window
     UrlChanged(String),
     Add,
     Select(usize),
@@ -61,7 +63,19 @@ enum Message {
     Pause,
     Remove,
     OpenFolder,
-    Caught(sdm_core::CatchRequest),
+    // catches, and the popup that confirms them
+    Caught(CatchRequest),
+    ClipboardUrl(String),
+    PopupFilename(String),
+    PopupDownload,
+    PopupCancel,
+    // windows & tray
+    CloseRequested(window::Id),
+    KeyEscape(window::Id),
+    TrayOpen,
+    TrayMenu(tray_icon::menu::MenuId),
+    ExitNow,
+    // runtime
     Tick,
     Finished,
 }
@@ -70,6 +84,24 @@ struct App {
     manager: Manager,
     url_input: String,
     selected: Option<usize>,
+    main_window: window::Id,
+    popup: Option<Popup>,
+    last_clip: Option<String>,
+    tray: Option<Tray>,
+}
+
+/// The small "download this?" window shown for a caught link.
+struct Popup {
+    id: window::Id,
+    url: String,
+    filename: String,
+    headers: Option<Vec<(String, String)>>,
+}
+
+struct Tray {
+    _icon: tray_icon::TrayIcon, // kept alive for the app's lifetime
+    open: tray_icon::menu::MenuId,
+    quit: tray_icon::menu::MenuId,
 }
 
 impl App {
@@ -79,17 +111,24 @@ impl App {
     }
 }
 
-fn init() -> (App, Task<Message>) {
+fn init(start_hidden: bool) -> (App, Task<Message>) {
     let mut manager = Manager::new(None);
     manager.load_queue();
-    (
-        App {
-            manager,
-            url_input: String::new(),
-            selected: None,
-        },
-        Task::none(),
-    )
+    let tray = build_tray();
+    let (main_window, opened) = window::open(main_settings());
+    // Only stay hidden when there's a tray icon to come back from.
+    let reveal_main = !(start_hidden && tray.is_some());
+    let app = App {
+        manager,
+        url_input: String::new(),
+        selected: None,
+        main_window,
+        popup: None,
+        last_clip: None,
+        tray,
+    };
+    let task = opened.then(move |id| if reveal_main { reveal(id) } else { darken(id) });
+    (app, task)
 }
 
 fn start_task(d: Download) -> Task<Message> {
@@ -151,14 +190,78 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let filename = if req.filename.is_empty() {
-                None
+                sdm_core::filename_from_url(&req.url)
             } else {
-                Some(req.filename.as_str())
+                sdm_core::sanitize_filename(&req.filename)
             };
             let headers = headers_for(&req);
-            let d = app.manager.add(&req.url, None, filename, 8, Some(headers));
+            open_popup(app, req.url, filename, Some(headers))
+        }
+        Message::ClipboardUrl(url) => {
+            if app.last_clip.as_deref() == Some(url.as_str()) {
+                return Task::none(); // same link copied again
+            }
+            app.last_clip = Some(url.clone());
+            let filename = sdm_core::filename_from_url(&url);
+            open_popup(app, url, filename, None)
+        }
+        Message::PopupFilename(s) => {
+            if let Some(p) = app.popup.as_mut() {
+                p.filename = s;
+            }
+            Task::none()
+        }
+        Message::PopupDownload => {
+            let Some(p) = app.popup.take() else {
+                return Task::none();
+            };
+            let name = p.filename.trim();
+            let d = app.manager.add(
+                &p.url,
+                None,
+                (!name.is_empty()).then_some(name),
+                8,
+                p.headers.clone(),
+            );
             app.selected = Some(d.id());
-            start_task(d)
+            // Only now does the full window come forward.
+            Task::batch([start_task(d), window::close(p.id), show_main(app)])
+        }
+        Message::PopupCancel => close_popup(app),
+        Message::CloseRequested(id) => {
+            if app.popup.as_ref().map(|p| p.id) == Some(id) {
+                close_popup(app)
+            } else if id == app.main_window && app.tray.is_some() {
+                // Keep running in the tray so downloads and catching continue.
+                window::change_mode(id, window::Mode::Hidden)
+            } else {
+                quit(app)
+            }
+        }
+        Message::KeyEscape(id) => {
+            if app.popup.as_ref().map(|p| p.id) == Some(id) {
+                close_popup(app)
+            } else {
+                Task::none()
+            }
+        }
+        Message::TrayOpen => show_main(app),
+        Message::TrayMenu(id) => {
+            let (open, quit_now) = match &app.tray {
+                Some(t) => (t.open == id, t.quit == id),
+                None => (false, false),
+            };
+            if open {
+                show_main(app)
+            } else if quit_now {
+                quit(app)
+            } else {
+                Task::none()
+            }
+        }
+        Message::ExitNow => {
+            app.tray = None; // remove the tray icon before the process goes away
+            iced::exit()
         }
         Message::Tick => Task::none(),
         Message::Finished => {
@@ -168,28 +271,299 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     }
 }
 
+// ---- windows ------------------------------------------------------------
+
+fn open_popup(
+    app: &mut App,
+    url: String,
+    filename: String,
+    headers: Option<Vec<(String, String)>>,
+) -> Task<Message> {
+    // The filename field takes focus, so Enter downloads and Esc cancels.
+    let focus = text_input::focus(text_input::Id::new(POPUP_INPUT));
+    if let Some(p) = app.popup.as_mut() {
+        // One popup at a time: retarget it at the newest catch.
+        p.url = url;
+        p.filename = filename;
+        p.headers = headers;
+        return window::gain_focus(p.id).chain(focus);
+    }
+    let (id, opened) = window::open(popup_settings());
+    app.popup = Some(Popup {
+        id,
+        url,
+        filename,
+        headers,
+    });
+    opened.then(reveal).chain(focus)
+}
+
+const POPUP_INPUT: &str = "popup-filename";
+
+fn close_popup(app: &mut App) -> Task<Message> {
+    match app.popup.take() {
+        Some(p) => window::close(p.id),
+        None => Task::none(),
+    }
+}
+
+fn show_main(app: &App) -> Task<Message> {
+    let id = app.main_window;
+    window::change_mode(id, window::Mode::Windowed).chain(window::gain_focus(id))
+}
+
+fn quit(app: &mut App) -> Task<Message> {
+    app.manager.pause_all();
+    app.manager.save_queue();
+    // Give paused workers a moment to checkpoint their sidecars before exiting.
+    Task::perform(tokio::time::sleep(Duration::from_millis(700)), |_| {
+        Message::ExitNow
+    })
+}
+
+/// Windows open hidden; apply the dark frame first, then show, so there's no
+/// light-title-bar flash.
+fn reveal(id: window::Id) -> Task<Message> {
+    darken(id)
+        .chain(window::change_mode(id, window::Mode::Windowed))
+        .chain(window::gain_focus(id))
+}
+
+fn darken(id: window::Id) -> Task<Message> {
+    window::run_with_handle(id, set_dark_titlebar).discard()
+}
+
+fn main_settings() -> window::Settings {
+    window::Settings {
+        size: Size::new(760.0, 620.0),
+        min_size: Some(Size::new(520.0, 380.0)),
+        position: window::Position::Centered,
+        visible: false,
+        exit_on_close_request: false, // closing hides to the tray
+        icon: window_icon(),
+        ..window::Settings::default()
+    }
+}
+
+fn popup_settings() -> window::Settings {
+    window::Settings {
+        size: Size::new(520.0, 200.0),
+        position: window::Position::Centered,
+        resizable: false,
+        level: window::Level::AlwaysOnTop,
+        visible: false,
+        exit_on_close_request: false,
+        icon: window_icon(),
+        ..window::Settings::default()
+    }
+}
+
+fn window_icon() -> Option<window::Icon> {
+    window::icon::from_rgba(logo_rgba(64), 64, 64).ok()
+}
+
+#[cfg(windows)]
+fn set_dark_titlebar(handle: window::raw_window_handle::WindowHandle<'_>) {
+    use window::raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: i32 = 20;
+    if let RawWindowHandle::Win32(h) = handle.as_raw() {
+        let enabled: i32 = 1;
+        unsafe {
+            DwmSetWindowAttribute(
+                h.hwnd.get(),
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &enabled as *const i32 as *const std::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn set_dark_titlebar(_handle: window::raw_window_handle::WindowHandle<'_>) {}
+
+// ---- tray ---------------------------------------------------------------
+
+fn build_tray() -> Option<Tray> {
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let open = MenuItem::new("Open SDM", true, None);
+    let quit = MenuItem::new("Quit", true, None);
+    let menu = Menu::new();
+    menu.append(&open).ok()?;
+    menu.append(&PredefinedMenuItem::separator()).ok()?;
+    menu.append(&quit).ok()?;
+    let icon = tray_icon::Icon::from_rgba(logo_rgba(32), 32, 32).ok()?;
+    let tray = tray_icon::TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("SDM — Segmented Download Manager")
+        .with_icon(icon)
+        .build()
+        .ok()?;
+    Some(Tray {
+        _icon: tray,
+        open: open.id().clone(),
+        quit: quit.id().clone(),
+    })
+}
+
+/// The app mark: a blue rounded square with a white download arrow, drawn
+/// with 4×4 supersampling so edges stay smooth at any size.
+fn logo_rgba(n: u32) -> Vec<u8> {
+    let s = n as f32;
+    let radius = s * 0.22;
+    let mid = s / 2.0;
+    let in_square = |x: f32, y: f32| {
+        let dx = x - x.clamp(radius, s - radius);
+        let dy = y - y.clamp(radius, s - radius);
+        dx * dx + dy * dy <= radius * radius
+    };
+    let in_arrow = |x: f32, y: f32| {
+        let shaft = (x - mid).abs() <= s * 0.075 && (s * 0.20..=s * 0.55).contains(&y);
+        let (top, apex, half) = (s * 0.42, s * 0.72, s * 0.24);
+        let head = (top..=apex).contains(&y) && (x - mid).abs() <= half * (apex - y) / (apex - top);
+        let tray = (s * 0.79..=s * 0.86).contains(&y) && (x - mid).abs() <= s * 0.28;
+        shaft || head || tray
+    };
+    const SS: u32 = 4;
+    let mut px = vec![0u8; (n * n * 4) as usize];
+    for py in 0..n {
+        for pxl in 0..n {
+            let (mut cover, mut white) = (0u32, 0u32);
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let x = pxl as f32 + (sx as f32 + 0.5) / SS as f32;
+                    let y = py as f32 + (sy as f32 + 0.5) / SS as f32;
+                    if in_square(x, y) {
+                        cover += 1;
+                        if in_arrow(x, y) {
+                            white += 1;
+                        }
+                    }
+                }
+            }
+            let alpha = cover as f32 / (SS * SS) as f32;
+            let w = if cover > 0 { white as f32 / cover as f32 } else { 0.0 };
+            let t = py as f32 / s; // gentle top-to-bottom gradient
+            let base = [
+                91.0 * (1.0 - t) + 63.0 * t,
+                140.0 * (1.0 - t) + 111.0 * t,
+                255.0 * (1.0 - t) + 239.0 * t,
+            ];
+            let i = ((py * n + pxl) * 4) as usize;
+            for c in 0..3 {
+                px[i + c] = (base[c] * (1.0 - w) + 255.0 * w) as u8;
+            }
+            px[i + 3] = (alpha * 255.0) as u8;
+        }
+    }
+    px
+}
+
+// ---- subscriptions --------------------------------------------------------
+
 fn subscription(_app: &App) -> Subscription<Message> {
     Subscription::batch([
         iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
         Subscription::run(ipc_stream),
+        Subscription::run(tray_stream),
+        Subscription::run(clip_stream),
+        window::close_requests().map(Message::CloseRequested),
+        iced::event::listen_with(|event, _status, id| match event {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            }) => Some(Message::KeyEscape(id)),
+            _ => None,
+        }),
     ])
 }
 
 // Runs the loopback IPC server and forwards each caught request into the app.
 fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(16, |mut output| async move {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<sdm_core::CatchRequest>(16);
+        use iced::futures::SinkExt;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<CatchRequest>(16);
         tokio::spawn(sdm_core::ipc::serve(tx));
         while let Some(req) = rx.recv().await {
-            use iced::futures::SinkExt;
             let _ = output.send(Message::Caught(req)).await;
         }
     })
 }
 
+// Tray menu clicks and double-clicks on the icon.
+fn tray_stream() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(8, |mut output| async move {
+        use iced::futures::SinkExt;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let menu_tx = tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(ev) = tray_icon::menu::MenuEvent::receiver().recv() {
+                if menu_tx.send(Message::TrayMenu(ev.id)).is_err() {
+                    break;
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            while let Ok(ev) = tray_icon::TrayIconEvent::receiver().recv() {
+                if matches!(ev, tray_icon::TrayIconEvent::DoubleClick { .. })
+                    && tx.send(Message::TrayOpen).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        while let Some(msg) = rx.recv().await {
+            let _ = output.send(msg).await;
+        }
+    })
+}
+
+// Event-driven clipboard catching: the monitor wakes only on WM_CLIPBOARDUPDATE
+// (AddClipboardFormatListener), so nothing is polled. Content already on the
+// clipboard at startup is ignored — only new copies count.
+#[cfg(windows)]
+fn clip_stream() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(8, |mut output| async move {
+        use iced::futures::SinkExt;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        std::thread::spawn(move || {
+            let Ok(mut monitor) = clipboard_win::Monitor::new() else {
+                return;
+            };
+            while let Ok(true) = monitor.recv() {
+                // Let the copying app finish first — OLE apps set the data and then
+                // flush it, and opening the clipboard in between makes *their* copy
+                // fail — and fold a burst of updates from one copy into one read.
+                std::thread::sleep(Duration::from_millis(120));
+                while let Ok(true) = monitor.try_recv() {}
+                let text = (0..3).find_map(|attempt| {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_millis(60));
+                    }
+                    clipboard_win::get_clipboard_string().ok()
+                });
+                if let Some(url) = text.and_then(|t| sdm_core::extract_download_url(&t, false)) {
+                    if tx.send(url).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        while let Some(url) = rx.recv().await {
+            let _ = output.send(Message::ClipboardUrl(url)).await;
+        }
+    })
+}
+
+#[cfg(not(windows))]
+fn clip_stream() -> impl iced::futures::Stream<Item = Message> {
+    iced::futures::stream::empty()
+}
+
 // Turn a caught request's cookies / UA / referrer into request headers so
 // authenticated (session) downloads work.
-fn headers_for(req: &sdm_core::CatchRequest) -> Vec<(String, String)> {
+fn headers_for(req: &CatchRequest) -> Vec<(String, String)> {
     let mut h = sdm_core::default_headers();
     if !req.user_agent.is_empty() {
         for kv in h.iter_mut() {
@@ -209,7 +583,37 @@ fn headers_for(req: &sdm_core::CatchRequest) -> Vec<(String, String)> {
 
 // ---- view ---------------------------------------------------------------
 
-fn view(app: &App) -> Element<'_, Message> {
+fn title(app: &App, id: window::Id) -> String {
+    match &app.popup {
+        Some(p) if p.id == id => "SDM — New download".to_string(),
+        _ => "SDM".to_string(),
+    }
+}
+
+fn view(app: &App, id: window::Id) -> Element<'_, Message> {
+    match &app.popup {
+        Some(p) if p.id == id => popup_view(p),
+        _ => main_view(app),
+    }
+}
+
+fn logo_mark() -> Element<'static, Message> {
+    container(Space::new(0, 0))
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(ACCENT)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 5.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn main_view(app: &App) -> Element<'_, Message> {
     let active = app
         .manager
         .downloads
@@ -224,19 +628,6 @@ fn view(app: &App) -> Element<'_, Message> {
         .map(|d| d.speed())
         .sum();
 
-    let logo = container(Space::new(0, 0))
-        .width(Length::Fixed(18.0))
-        .height(Length::Fixed(18.0))
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(ACCENT)),
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: 5.0.into(),
-            },
-            ..container::Style::default()
-        });
-
     let header_right: Element<Message> = if active > 0 {
         text(format!("↓ {}/s", human_bytes(Some(total))))
             .size(13.0)
@@ -247,7 +638,7 @@ fn view(app: &App) -> Element<'_, Message> {
     };
 
     let header = row![
-        logo,
+        logo_mark(),
         text("SDM").size(20.0).font(semibold()),
         Space::with_width(Length::Fill),
         header_right,
@@ -294,6 +685,59 @@ fn view(app: &App) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+fn popup_view(p: &Popup) -> Element<'_, Message> {
+    let header = row![
+        logo_mark(),
+        text("New download").size(16.0).font(semibold()),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let name = text_input("File name", &p.filename)
+        .id(text_input::Id::new(POPUP_INPUT))
+        .on_input(Message::PopupFilename)
+        .on_submit(Message::PopupDownload)
+        .padding([10.0, 12.0])
+        .size(14.0)
+        .style(input_style);
+
+    let actions = row![
+        Space::with_width(Length::Fill),
+        ghost("Cancel", Message::PopupCancel),
+        button(text("Download").size(14.0))
+            .on_press(Message::PopupDownload)
+            .padding([10.0, 20.0])
+            .style(accent_button),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    container(
+        column![
+            header,
+            text(middle_ellipsis(&p.url, 72)).size(12.0).color(MUTED),
+            name,
+            actions,
+        ]
+        .spacing(14),
+    )
+    .padding(20)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn middle_ellipsis(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let keep = (max - 1) / 2;
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(n - keep).collect();
+    format!("{head}…{tail}")
 }
 
 fn download_card(selected: bool, d: &Download) -> Element<'static, Message> {
@@ -399,6 +843,8 @@ fn open_folder(dir: &Path) {
 
 // ---- fonts & theme ------------------------------------------------------
 
+// A UI font with full CJK coverage on Windows (filenames are often non-Latin);
+// elsewhere iced's default, which falls back through the system fonts.
 #[cfg(target_os = "windows")]
 fn ui_font() -> iced::Font {
     iced::Font::with_name("Microsoft YaHei UI")
@@ -413,50 +859,6 @@ fn semibold() -> iced::Font {
     f.weight = iced::font::Weight::Semibold;
     f
 }
-
-// Windows draws the title bar itself; ask DWM to make it dark so the native
-// frame matches the app. iced doesn't expose the raw window handle, so we find
-// the window by title shortly after it opens and set the attribute.
-#[cfg(windows)]
-fn apply_dark_titlebar_async() {
-    use std::ffi::c_void;
-    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER,
-    };
-    const DWMWA_USE_IMMERSIVE_DARK_MODE: i32 = 20;
-    std::thread::spawn(|| {
-        let title: Vec<u16> = "SDM\0".encode_utf16().collect();
-        for _ in 0..100 {
-            let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
-            if hwnd != 0 {
-                let enabled: i32 = 1;
-                unsafe {
-                    DwmSetWindowAttribute(
-                        hwnd,
-                        DWMWA_USE_IMMERSIVE_DARK_MODE,
-                        &enabled as *const i32 as *const c_void,
-                        std::mem::size_of::<i32>() as u32,
-                    );
-                    SetWindowPos(
-                        hwnd,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                    );
-                }
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    });
-}
-#[cfg(not(windows))]
-fn apply_dark_titlebar_async() {}
 
 fn sdm_theme() -> Theme {
     let mut p = Theme::Dark.palette();
@@ -600,15 +1002,17 @@ mod native_host {
         ))
     }
 
-    /// Start the GUI as an independent process: no inherited stdio (those are the
-    /// browser's native-messaging pipes) and, on Windows, broken away from the
-    /// browser's job object so SDM keeps running after the port closes.
+    /// Start the GUI in the tray (only the catch popup should appear) as an
+    /// independent process: no inherited stdio (those are the browser's
+    /// native-messaging pipes) and, on Windows, broken away from the browser's
+    /// job object so SDM keeps running after the port closes.
     fn launch_gui() {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
         let mut cmd = std::process::Command::new(exe);
-        cmd.stdin(std::process::Stdio::null())
+        cmd.arg("--background")
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         #[cfg(windows)]
