@@ -3456,6 +3456,7 @@ dependencies = [
  "sdm-core",
  "serde_json",
  "tokio",
+ "windows-sys 0.48.0",
  "winreg 0.52.0",
 ]
 

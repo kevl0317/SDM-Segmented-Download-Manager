@@ -27,6 +27,7 @@ const SUCCESS: Color = Color { r: 0.208, g: 0.769, b: 0.420, a: 1.0 }; // #35c46
 const DANGER: Color = Color { r: 1.0, g: 0.361, b: 0.361, a: 1.0 }; // #ff5c5c
 
 pub fn main() -> iced::Result {
+    apply_dark_titlebar_async();
     iced::application("SDM", update, view)
         .subscription(subscription)
         .theme(|_| sdm_theme())
@@ -345,6 +346,50 @@ fn semibold() -> iced::Font {
     f.weight = iced::font::Weight::Semibold;
     f
 }
+
+// Windows draws the title bar itself; ask DWM to make it dark so the native
+// frame matches the app. iced doesn't expose the raw window handle, so we find
+// the window by title shortly after it opens and set the attribute.
+#[cfg(windows)]
+fn apply_dark_titlebar_async() {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER,
+    };
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: i32 = 20;
+    std::thread::spawn(|| {
+        let title: Vec<u16> = "SDM\0".encode_utf16().collect();
+        for _ in 0..100 {
+            let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+            if hwnd != 0 {
+                let enabled: i32 = 1;
+                unsafe {
+                    DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &enabled as *const i32 as *const c_void,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+                    SetWindowPos(
+                        hwnd,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    );
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+}
+#[cfg(not(windows))]
+fn apply_dark_titlebar_async() {}
 
 fn sdm_theme() -> Theme {
     let mut p = Theme::Dark.palette();
