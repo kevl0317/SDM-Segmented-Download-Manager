@@ -1,0 +1,13 @@
+<!-- SignPath artifact configuration "app": SDM.exe, uploaded by the Build
+     workflow as a ZIP with sdm-gui.exe at its root. Paste into the SignPath
+     project; the workflow passes the version parameter. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="sdm-gui.exe" product-name="SDM" product-version="${version}">
+      <authenticode-sign hash-algorithm="sha256" />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

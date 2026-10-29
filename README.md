@@ -31,12 +31,14 @@ browser, and a tray icon that keeps it running in the background.
 Download the latest **`SDM-Setup-<version>.exe`** from the
 [Releases](https://github.com/kevl0317/SDM-Segmented-Download-Manager/releases)
 page and run it. It installs SDM per-user (no admin) on 64-bit Windows 10 or 11,
-with a Start-Menu shortcut and an uninstaller, and registers the browser host.
-Installing over 1.x upgrades it in place; your download list and settings carry
-over.
+with a Start-Menu shortcut and an uninstaller, and (unless you untick it) the
+browser host the extension needs. Installing over 1.x upgrades it in place;
+your download list and settings carry over.
 
-The installer is unsigned, so Windows SmartScreen may warn on first run
-(More info → Run anyway).
+Releases will be signed by the [SignPath Foundation](https://signpath.org/),
+which provides free code signing for open-source projects, once it accepts SDM.
+Until then the installer is unsigned, so Windows SmartScreen may warn on first
+run (More info → Run anyway). See the [Code signing policy](CODE_SIGNING_POLICY.md).
 
 ## Using SDM
 
@@ -75,11 +77,37 @@ iscc SDM.iss                       # -> dist/SDM-Setup-<version>.exe (needs the 
 cargo test --workspace
 ```
 
+`scripts\build-installer.ps1` does the app and the installer in one step;
+`-SignCommand "<signtool command>"` signs a local build with a certificate of
+your own.
+
 CLI: `sdm <url> [-o/--out <dir>] [-n/--connections <N>] [-f/--filename <name>]`.
 Ctrl+C stops the download.
 
 The desktop app targets Windows. The engine and CLI are plain Rust and should
 build on macOS and Linux, but only Windows is tested so far.
+
+### Release builds and signing
+
+Release builds come from [GitHub Actions](.github/workflows/build.yml): pushing
+a version tag (`v2.0.2`, matching `SDM.iss`) builds SDM on GitHub's runners and
+attaches the installer to that tag's release (a draft, if there isn't one yet).
+Pull requests and `main` get the tests and an unsigned installer as a run
+artifact.
+
+Signing goes through the [SignPath Foundation](https://signpath.org/), free for
+open-source projects; see the [code signing policy](CODE_SIGNING_POLICY.md).
+Once the project is approved, the SignPath project needs the GitHub.com trusted
+build system, the artifact configurations in [`.github/signpath`](.github/signpath)
+(slugs `app` and `installer`), a release signing policy with manual approval,
+and a CI user. The repository then needs the secret `SIGNPATH_API_TOKEN` (that
+CI user's token) and the variables `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG`; from then on, tag
+builds sign SDM.exe and the installer, each after you approve it in SignPath.
+
+A signed installer can still get a SmartScreen warning at first. SmartScreen
+builds reputation for the signing identity as people install releases;
+Microsoft says that takes weeks and hundreds of installs.
 
 ## How it works
 
