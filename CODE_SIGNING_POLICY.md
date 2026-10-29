@@ -3,9 +3,8 @@
 Free code signing provided by [SignPath.io](https://about.signpath.io/),
 certificate by [SignPath Foundation](https://signpath.org/).
 
-> **Status:** SDM has applied to the SignPath Foundation's program for
-> open-source projects. Until the application is approved, releases are
-> unsigned.
+> **Status:** releases are unsigned until the SignPath Foundation accepts SDM
+> into its program for open-source projects.
 
 ## What gets signed
 

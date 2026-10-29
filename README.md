@@ -35,8 +35,10 @@ with a Start-Menu shortcut and an uninstaller, and (unless you untick it) the
 browser host the extension needs. Installing over 1.x upgrades it in place;
 your download list and settings carry over.
 
-The installer is unsigned for now, so Windows SmartScreen may warn on first run
-(More info → Run anyway). See the [code signing policy](CODE_SIGNING_POLICY.md).
+Releases will be signed by the [SignPath Foundation](https://signpath.org/),
+which provides free code signing for open-source projects, once it accepts SDM.
+Until then the installer is unsigned, so Windows SmartScreen may warn on first
+run (More info → Run anyway). See the [Code signing policy](CODE_SIGNING_POLICY.md).
 
 ## Using SDM
 
