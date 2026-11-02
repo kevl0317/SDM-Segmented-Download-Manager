@@ -147,6 +147,7 @@ only on a token-guarded loopback socket.
 | `crates/sdm-cli` | headless CLI (`sdm`) |
 | `crates/sdm-testkit` | a local HTTP server that misbehaves on request, for testing (not shipped) |
 | `tests/gui` | end-to-end tests of the app on Windows, driving the real binary |
+| `tests/installer` | installs over a running older SDM, the way an upgrade does |
 | `extension/` | Chrome/Edge extension that catches clicked download links |
 | `SDM.iss` | Inno Setup installer script |
 
@@ -157,7 +158,8 @@ the engine against a local server that misbehaves on request (dropped and silent
 connections, refusals, wrong ranges, expiring links, files replaced mid-download),
 checking every result byte for byte, plus the queue, the IPC wire format and the
 link helpers. `tests\gui\run.ps1` drives the real app through every state, menu and
-failure and checks what's on screen. `sdm-faultserver` runs that server on its own,
+failure and checks what's on screen, and `tests\installer\run.ps1` checks that an
+upgrade closes a running SDM cleanly. `sdm-faultserver` runs that server on its own,
 for trying the app against the same failures by hand.
 
 ## License

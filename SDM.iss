@@ -11,7 +11,7 @@
 ; Release builds are signed by GitHub Actions instead (.github/workflows).
 
 #define MyAppName "SDM"
-#define MyAppVersion "2.0.2"
+#define MyAppVersion "2.0.3"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
@@ -45,8 +45,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; Closing SDM's window only hides it to the tray, so a running copy has to be
-; closed forcibly before SDM.exe can be replaced.
+; A running SDM is asked to quit first (see [Code]); anything still holding a file
+; after that is closed by Windows' Restart Manager.
 CloseApplications=force
 #ifdef SIGN
 SignTool=sdmsign
@@ -75,3 +75,24 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 ; quit first (it saves its queue and waits until it has exited).
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--quit"; Flags: runhidden; RunOnceId: "QuitSdm"
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-host"; Flags: runhidden; RunOnceId: "UnregisterSdmHost"
+
+[Code]
+// Closing SDM's window only hides it to the tray, so the Restart Manager can't
+// close a running SDM: Setup froze for 30 seconds waiting, then ended it by force,
+// losing whatever it hadn't saved. Ask it to quit first instead: 2.x's --quit
+// saves its downloads and waits until SDM has exited.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Exe: String;
+  VersionMS, VersionLS: Cardinal;
+  ResultCode: Integer;
+begin
+  Result := '';
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  // 1.x doesn't know --quit: it would start instead.
+  if FileExists(Exe) and GetVersionNumbers(Exe, VersionMS, VersionLS) and (VersionMS shr 16 >= 2) then
+  begin
+    Log('Asking a running SDM to quit: ' + Exe + ' --quit');
+    Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
