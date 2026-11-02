@@ -3919,7 +3919,7 @@ dependencies = [
 
 [[package]]
 name = "sdm-cli"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "clap",
  "sdm-core",
@@ -3928,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "sdm-core"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "sdm-gui"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "clipboard-win",
  "iced",
@@ -3955,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "sdm-testkit"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "tokio",
 ]

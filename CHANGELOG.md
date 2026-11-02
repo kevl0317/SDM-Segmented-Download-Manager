@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.0.2 — 2026-11-02
 
 ### Fixed
 - **Files from GitHub releases could save under a random name with no

@@ -11,7 +11,7 @@
 ; Release builds are signed by GitHub Actions instead (.github/workflows).
 
 #define MyAppName "SDM"
-#define MyAppVersion "2.0.1"
+#define MyAppVersion "2.0.2"
 #define MyAppPublisher "Kevin Liu"
 #define MyAppURL "https://github.com/kevl0317/SDM-Segmented-Download-Manager"
 #define MyAppExeName "SDM.exe"
