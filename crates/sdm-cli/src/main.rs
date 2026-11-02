@@ -60,13 +60,21 @@ async fn main() -> ExitCode {
         .out
         .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned());
 
-    let d = Arc::new(Download::new(
+    let fresh = Download::new(
         &args.url,
         out.as_str(),
         args.filename.as_deref(),
         args.connections,
         None,
-    ));
+    );
+    // An earlier run of the same link left its progress here: carry on from it.
+    let d = Arc::new(match Download::from_state(&fresh.state_path()) {
+        Ok(saved) if saved.url() == args.url => {
+            println!("Resuming at {}", human_bytes(Some(saved.downloaded())));
+            saved
+        }
+        _ => fresh,
+    });
     println!("URL: {}", args.url);
 
     let worker = d.clone();

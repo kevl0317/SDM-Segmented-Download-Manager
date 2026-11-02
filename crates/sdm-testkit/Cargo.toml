@@ -1,0 +1,16 @@
+[package]
+name = "sdm-testkit"
+description = "A local HTTP server that misbehaves on request, for testing SDM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "sdm-faultserver"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true

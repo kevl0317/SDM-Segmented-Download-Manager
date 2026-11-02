@@ -3932,9 +3932,9 @@ version = "2.0.1"
 dependencies = [
  "futures-util",
  "reqwest",
+ "sdm-testkit",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3951,6 +3951,13 @@ dependencies = [
  "tray-icon",
  "windows-sys 0.48.0",
  "winreg 0.52.0",
+]
+
+[[package]]
+name = "sdm-testkit"
+version = "2.0.1"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

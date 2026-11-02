@@ -105,6 +105,10 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Room for the longest name a filesystem takes (255 UTF-16 units) minus what
+/// SDM adds while working: ".sdmdownload.sdm.tmp", or " (99)" for a duplicate.
+const MAX_NAME: usize = 230;
+
 /// Strip path separators / illegal filename chars; never returns empty.
 pub fn sanitize_filename(name: &str) -> String {
     let decoded = percent_decode(name);
@@ -119,9 +123,133 @@ pub fn sanitize_filename(name: &str) -> String {
     }
     let out = out.trim().trim_matches('.').to_string();
     if out.is_empty() {
-        "download".into()
+        return "download".into();
+    }
+    shorten(&not_a_device(out))
+}
+
+/// Windows reserves these names, with any extension, for devices.
+fn not_a_device(name: String) -> String {
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        format!("_{name}")
     } else {
-        out
+        name
+    }
+}
+
+/// Cut an over-long name down to fit, keeping its extension.
+fn shorten(name: &str) -> String {
+    if name.encode_utf16().count() <= MAX_NAME {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if ext.len() <= 16 => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    let mut budget = MAX_NAME - ext.encode_utf16().count();
+    let mut out = String::new();
+    for c in stem.chars() {
+        if c.len_utf16() > budget {
+            break;
+        }
+        budget -= c.len_utf16();
+        out.push(c);
+    }
+    out.push_str(&ext);
+    out
+}
+
+fn has_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && (1..=8).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// The extension for a server-declared type, for names that came without one.
+fn extension_for_type(content_type: &str) -> Option<&'static str> {
+    let essence = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    Some(match essence.as_str() {
+        "application/zip" | "application/x-zip-compressed" => "zip",
+        "application/x-7z-compressed" => "7z",
+        "application/vnd.rar" | "application/x-rar-compressed" => "rar",
+        "application/gzip" | "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/x-msdownload" | "application/x-msdos-program" | "application/x-dosexec"
+        | "application/vnd.microsoft.portable-executable" => "exe",
+        "application/x-msi" | "application/x-ms-installer" => "msi",
+        "application/vnd.android.package-archive" => "apk",
+        "application/x-iso9660-image" => "iso",
+        "application/pdf" => "pdf",
+        "video/mp4" => "mp4",
+        "video/x-matroska" => "mkv",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "audio/mpeg" => "mp3",
+        "audio/flac" => "flac",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "text/html" => "html",
+        "text/plain" => "txt",
+        _ => return None,
+    })
+}
+
+/// A filename the link itself carries in its query. Signed storage links (S3,
+/// Azure — GitHub releases among them) end in a random id and name the file here.
+fn filename_hint(url: &reqwest::Url) -> Option<String> {
+    url.query_pairs().find_map(|(key, value)| {
+        match key.to_ascii_lowercase().as_str() {
+            "rscd" | "response-content-disposition" => parse_content_disposition(&value),
+            _ => None,
+        }
+    })
+}
+
+fn last_segment(url: &reqwest::Url) -> Option<String> {
+    url.path_segments()?
+        .last()
+        .filter(|s| !s.is_empty())
+        .map(sanitize_filename)
+}
+
+/// What to call a download once the server has answered: its stated name first,
+/// then what the links say. A redirect's target is often a random blob id, so
+/// whichever link's last segment looks like a file wins over one that doesn't.
+pub(crate) fn resolve_filename(
+    link: &str,
+    final_url: &str,
+    disposition: Option<&str>,
+    content_type: Option<&str>,
+) -> String {
+    let link = reqwest::Url::parse(link).ok();
+    let last = reqwest::Url::parse(final_url).ok();
+    let name = disposition
+        .and_then(parse_content_disposition)
+        .or_else(|| last.as_ref().and_then(filename_hint))
+        .or_else(|| link.as_ref().and_then(filename_hint))
+        .unwrap_or_else(|| {
+            let from_last = last.as_ref().and_then(last_segment);
+            let from_link = link.as_ref().and_then(last_segment);
+            match (from_last, from_link) {
+                (Some(a), _) if has_extension(&a) => a,
+                (_, Some(b)) if has_extension(&b) => b,
+                (Some(a), _) => a,
+                (_, Some(b)) => b,
+                _ => "download".to_string(),
+            }
+        });
+    if has_extension(&name) {
+        return name;
+    }
+    match content_type.and_then(extension_for_type) {
+        Some(ext) => format!("{name}.{ext}"),
+        None => name,
     }
 }
 
@@ -159,18 +287,13 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
     None
 }
 
-/// Last path segment of a URL, sanitized; falls back to `download`.
+/// The best name a URL alone gives: the one its query promises, or its last path
+/// segment, sanitized; falls back to `download`.
 pub fn filename_from_url(url: &str) -> String {
-    if let Ok(u) = reqwest::Url::parse(url) {
-        if let Some(seg) = u
-            .path_segments()
-            .and_then(|s| s.last())
-            .filter(|s| !s.is_empty())
-        {
-            return sanitize_filename(seg);
-        }
-    }
-    "download".into()
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| filename_hint(&u).or_else(|| last_segment(&u)))
+        .unwrap_or_else(|| "download".into())
 }
 
 /// File types worth catching when a link is copied, so ordinary page links
@@ -205,8 +328,7 @@ pub fn extract_download_url(text: &str, monitor_all: bool) -> Option<String> {
     if monitor_all {
         return Some(t.to_string());
     }
-    let url = reqwest::Url::parse(t).ok()?;
-    let name = url.path().rsplit('/').next().unwrap_or("");
+    let name = filename_from_url(t);
     let (_, ext) = name.rsplit_once('.')?;
     DOWNLOAD_EXTENSIONS
         .contains(&ext.to_ascii_lowercase().as_str())
