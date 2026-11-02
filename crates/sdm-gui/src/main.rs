@@ -141,6 +141,19 @@ pub fn main() -> iced::Result {
     if !start_hidden && hand_over_to_running() {
         return Ok(());
     }
+    // Another copy may be starting right now, before it can answer: two catches with
+    // SDM closed start the host twice. The browser's host keeps trying until it's up.
+    if !first_instance() {
+        if !start_hidden {
+            for _ in 0..50 {
+                std::thread::sleep(Duration::from_millis(200));
+                if hand_over_to_running() {
+                    break;
+                }
+            }
+        }
+        return Ok(());
+    }
     // Draw with Direct3D 12 on Windows: under Vulkan, some drivers' way of
     // presenting (seen with NVIDIA) leaves the native menu bar see-through.
     // An explicit WGPU_BACKEND still wins.
@@ -170,6 +183,7 @@ enum Message {
     Caught(CatchRequest),
     ClipboardUrl(String),
     PopupFilename(String),
+    PopupNamed(String, Option<String>),
     PopupDownload,
     PopupCancel,
     // menus (the window's menu bar and the tray share one event stream)
@@ -178,6 +192,7 @@ enum Message {
     OpenProject,
     // windows & keys
     MainHwnd(Option<isize>),
+    WindowResized(window::Id, f32),
     CloseRequested(window::Id),
     KeyEscape(window::Id),
     KeyNew,
@@ -290,6 +305,7 @@ struct App {
     selected: Option<usize>,
     main_window: window::Id,
     main_hwnd: Option<isize>,
+    main_width: f32,
     reveal_main: bool,
     popup: Option<Popup>,
     about: Option<window::Id>,
@@ -304,6 +320,9 @@ struct Popup {
     url: String,
     filename: String,
     headers: Option<Vec<(String, String)>>,
+    /// The name came from the user or the browser, so it stands. Otherwise it's a
+    /// guess from the link, and the server has the last word.
+    named: bool,
 }
 
 struct Tray {
@@ -379,7 +398,9 @@ fn init(start_hidden: bool) -> (App, Task<Message>) {
     let settings = Settings::load();
     let tray = build_tray();
     let menu_bar = build_menu_bar(&settings);
-    let (main_window, opened) = window::open(main_settings());
+    let main = main_settings();
+    let main_width = main.size.width;
+    let (main_window, opened) = window::open(main);
     // Only stay hidden when there's a tray icon to come back from.
     let reveal_main = !(start_hidden && tray.is_some());
     let dark = settings.theme.is_dark();
@@ -391,6 +412,7 @@ fn init(start_hidden: bool) -> (App, Task<Message>) {
         selected: None,
         main_window,
         main_hwnd: None,
+        main_width,
         reveal_main,
         popup: None,
         about: None,
@@ -400,7 +422,9 @@ fn init(start_hidden: bool) -> (App, Task<Message>) {
     };
     // Theme the frame first, then attach the menu bar (MainHwnd) — which reveals it.
     let task = opened.then(move |id| {
-        frame(id, dark).chain(window::run_with_handle(id, hwnd_of).map(Message::MainHwnd))
+        keep_size_across_monitors(id)
+            .chain(frame(id, dark))
+            .chain(window::run_with_handle(id, hwnd_of).map(Message::MainHwnd))
     });
     (app, task)
 }
@@ -463,13 +487,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             if req.url.is_empty() {
                 return Task::none();
             }
-            let filename = if req.filename.is_empty() {
-                sdm_core::filename_from_url(&req.url)
-            } else {
+            let named = !req.filename.is_empty();
+            let filename = if named {
                 sdm_core::sanitize_filename(&req.filename)
+            } else {
+                sdm_core::filename_from_url(&req.url)
             };
             let headers = headers_for(&req);
-            open_popup(app, req.url, filename, Some(headers))
+            open_popup(app, req.url, filename, named, Some(headers))
         }
         Message::ClipboardUrl(url) => {
             let s = app.settings;
@@ -480,11 +505,20 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             app.last_clip = Some(url.clone());
             let filename = sdm_core::filename_from_url(&url);
-            open_popup(app, url, filename, None)
+            open_popup(app, url, filename, false, None)
         }
         Message::PopupFilename(s) => {
             if let Some(p) = app.popup.as_mut() {
                 p.filename = s;
+                p.named = true;
+            }
+            Task::none()
+        }
+        Message::PopupNamed(url, name) => {
+            if let (Some(p), Some(name)) = (app.popup.as_mut(), name) {
+                if p.url == url && !p.named {
+                    p.filename = name;
+                }
             }
             Task::none()
         }
@@ -496,7 +530,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let d = app.manager.add(
                 &p.url,
                 None,
-                (!name.is_empty()).then_some(name),
+                (p.named && !name.is_empty()).then_some(name),
                 8,
                 p.headers.clone(),
             );
@@ -522,6 +556,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             } else {
                 level
             }
+        }
+        Message::WindowResized(id, width) => {
+            if id == app.main_window {
+                app.main_width = width;
+            }
+            Task::none()
         }
         Message::CloseRequested(id) => {
             if app.popup.as_ref().map(|p| p.id) == Some(id) {
@@ -552,6 +592,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::TrayOpen | Message::Relaunched => show_main(app),
         Message::QuitRequested => quit(app),
         Message::ExitNow => {
+            app.manager.save_queue();
             app.tray = None; // remove the tray icon before the process goes away
             iced::exit()
         }
@@ -835,16 +876,31 @@ fn open_popup(
     app: &mut App,
     url: String,
     filename: String,
+    named: bool,
     headers: Option<Vec<(String, String)>>,
 ) -> Task<Message> {
     // The filename field takes focus, so Enter downloads and Esc cancels.
     let focus = text_input::focus(text_input::Id::new(POPUP_INPUT));
+    // Links often don't say what they lead to; the server does, in a moment.
+    let ask_server = if named {
+        Task::none()
+    } else {
+        let (link, sent) = (url.clone(), headers.clone());
+        Task::perform(
+            async move {
+                let name = Download::suggested_name(&link, sent).await;
+                (link, name)
+            },
+            |(link, name)| Message::PopupNamed(link, name),
+        )
+    };
     if let Some(p) = app.popup.as_mut() {
         // One popup at a time: retarget it at the newest catch.
         p.url = url;
         p.filename = filename;
         p.headers = headers;
-        return pop_up(p.id).chain(focus);
+        p.named = named;
+        return Task::batch([pop_up(p.id).chain(focus), ask_server]);
     }
     let (id, opened) = window::open(popup_settings());
     app.popup = Some(Popup {
@@ -852,11 +908,15 @@ fn open_popup(
         url,
         filename,
         headers,
+        named,
     });
     let dark = app.dark();
-    opened
-        .then(move |id| reveal(id, dark).chain(pop_up(id)))
-        .chain(focus)
+    Task::batch([
+        opened
+            .then(move |id| reveal(id, dark).chain(pop_up(id)))
+            .chain(focus),
+        ask_server,
+    ])
 }
 
 /// Put the popup in front of everything once, even when Windows won't hand us
@@ -906,10 +966,19 @@ fn new_download(app: &App) -> Task<Message> {
 fn quit(app: &mut App) -> Task<Message> {
     app.manager.pause_all();
     app.manager.save_queue();
-    // Give paused workers a moment to checkpoint their sidecars before exiting.
-    Task::perform(tokio::time::sleep(Duration::from_millis(700)), |_| {
-        Message::ExitNow
-    })
+    // Let the downloads stop and save their progress before the process goes.
+    let jobs = app.manager.downloads.clone();
+    Task::perform(
+        async move {
+            for _ in 0..60 {
+                if !jobs.iter().any(Download::is_active) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+        |_| Message::ExitNow,
+    )
 }
 
 fn level_for(on_top: bool) -> window::Level {
@@ -923,7 +992,21 @@ fn level_for(on_top: bool) -> window::Level {
 /// Windows open hidden; theme the title bar first, then show, so there's no
 /// wrong-color flash.
 fn reveal(id: window::Id, dark: bool) -> Task<Message> {
-    frame(id, dark).chain(window::change_mode(id, window::Mode::Windowed))
+    keep_size_across_monitors(id)
+        .chain(frame(id, dark))
+        .chain(window::change_mode(id, window::Mode::Windowed))
+}
+
+fn keep_size_across_monitors(id: window::Id) -> Task<Message> {
+    window::run_with_handle(id, |handle| {
+        #[cfg(windows)]
+        if let Some(hwnd) = hwnd_of(handle) {
+            monitor_guard::install(hwnd);
+        }
+        #[cfg(not(windows))]
+        let _ = handle;
+    })
+    .discard()
 }
 
 fn frame(id: window::Id, dark: bool) -> Task<Message> {
@@ -970,6 +1053,29 @@ fn grant_foreground_to_gui() {
             windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
         }
     }
+}
+
+/// Is this the only SDM on this profile? The answer holds for the process's life:
+/// Windows keeps the named mutex until it exits, however it exits.
+#[cfg(windows)]
+fn first_instance() -> bool {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let mut hash = DefaultHasher::new();
+    sdm_core::config_dir().hash(&mut hash);
+    let name: Vec<u16> = format!("Local\\SDM-{:016x}\0", hash.finish())
+        .encode_utf16()
+        .collect();
+    unsafe {
+        CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        GetLastError() != ERROR_ALREADY_EXISTS
+    }
+}
+
+#[cfg(not(windows))]
+fn first_instance() -> bool {
+    true
 }
 
 /// A second launch: ask the running SDM to show its window. True if one answered.
@@ -1101,6 +1207,178 @@ fn repaint_caption(handle: window::raw_window_handle::WindowHandle<'_>) {
 #[cfg(not(windows))]
 fn repaint_caption(_handle: window::raw_window_handle::WindowHandle<'_>) {}
 
+// ---- monitors with different scaling --------------------------------------
+
+/// Keeps a window its size when it moves between monitors with different scaling.
+///
+/// While the user drags a window, Windows' drag loop keeps its own idea of the
+/// window's size and re-applies it on every mouse move; at a change of scale it asks
+/// the window what size it wants (WM_GETDPISCALEDSIZE) and otherwise scales its idea
+/// by the ratio. winit doesn't answer, and it also moves the window off the spot
+/// Windows suggests, which near the edge between two monitors puts it back over the
+/// one it came from: the scale flips back at once, the drag loop misses that, and
+/// scales its size by the ratio anyway. Each flip compounds, and the window ends up
+/// far bigger, or smaller, than it was. So the window's size is kept here in
+/// 96-dpi units, given to Windows whenever it asks, and at a change of scale the
+/// window goes exactly where Windows suggests.
+#[cfg(windows)]
+mod monitor_guard {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetMenu, GetWindowLongW, IsIconic, IsZoomed, SetWindowPos, GWL_EXSTYLE,
+        GWL_STYLE, SIZE_RESTORED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        WINDOWPOS, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SIZE,
+        WM_SIZING, WM_WINDOWPOSCHANGING,
+    };
+
+    const WM_GETDPISCALEDSIZE: u32 = 0x02E4;
+    const SUBCLASS_ID: usize = 0x5344_4D44;
+
+    struct Guard {
+        /// The window's inside size in 96-dpi units: its size on any monitor.
+        size: (f64, f64),
+        /// In Windows' drag loop, and whether it's resizing rather than moving.
+        in_drag: bool,
+        resizing: bool,
+        /// While a change of scale is handled: where the window goes.
+        placing: Option<RECT>,
+    }
+
+    pub fn install(hwnd: isize) {
+        let guard = Box::new(Guard {
+            size: size_of(hwnd),
+            in_drag: false,
+            resizing: false,
+            placing: None,
+        });
+        unsafe {
+            SetWindowSubclass(hwnd, Some(proc), SUBCLASS_ID, Box::into_raw(guard) as usize);
+        }
+    }
+
+    /// The window's inside size now, in 96-dpi units.
+    fn size_of(hwnd: HWND) -> (f64, f64) {
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let unit = 96.0 / unsafe { GetDpiForWindow(hwnd) }.max(1) as f64;
+        unsafe { GetClientRect(hwnd, &mut r) };
+        (r.right as f64 * unit, r.bottom as f64 * unit)
+    }
+
+    /// The whole window's size for an inside size in 96-dpi units, at this scale.
+    fn outer_size(hwnd: HWND, size: (f64, f64), dpi: u32) -> (i32, i32) {
+        let scale = dpi as f64 / 96.0;
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: (size.0 * scale).round() as i32,
+            bottom: (size.1 * scale).round() as i32,
+        };
+        unsafe {
+            AdjustWindowRectExForDpi(
+                &mut r,
+                GetWindowLongW(hwnd, GWL_STYLE) as u32,
+                (GetMenu(hwnd) != 0) as BOOL,
+                GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
+                dpi,
+            );
+        }
+        (r.right - r.left, r.bottom - r.top)
+    }
+
+    /// Snapped to part of the screen? Looked up by name: older Windows 10 lacks it.
+    fn is_snapped(hwnd: HWND) -> bool {
+        unsafe {
+            let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+            match GetProcAddress(user32, b"IsWindowArranged\0".as_ptr()) {
+                Some(f) => {
+                    let f: unsafe extern "system" fn(HWND) -> BOOL = std::mem::transmute(f);
+                    f(hwnd) != 0
+                }
+                None => false,
+            }
+        }
+    }
+
+    unsafe extern "system" fn proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        data: usize,
+    ) -> LRESULT {
+        let guard = &mut *(data as *mut Guard);
+        match msg {
+            // Windows' drag loop adopts this answer as its idea of the window's size.
+            WM_GETDPISCALEDSIZE => {
+                let (cx, cy) = outer_size(hwnd, guard.size, wparam as u32);
+                *(lparam as *mut SIZE) = SIZE { cx, cy };
+                return 1;
+            }
+            WM_DPICHANGED if IsZoomed(hwnd) == 0 => {
+                let new_dpi = (wparam & 0xFFFF) as u32;
+                let suggested = *(lparam as *const RECT);
+                let (cx, cy) = outer_size(hwnd, guard.size, new_dpi);
+                let spot = RECT {
+                    left: suggested.left,
+                    top: suggested.top,
+                    right: suggested.left + cx,
+                    bottom: suggested.top + cy,
+                };
+                // winit resizes the window here; WM_WINDOWPOSCHANGING puts it on the spot.
+                let outer = guard.placing.replace(spot);
+                let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                guard.placing = outer;
+                // Unless the scale changed again meanwhile, make sure it's there.
+                if GetDpiForWindow(hwnd) == new_dpi {
+                    SetWindowPos(hwnd, 0, spot.left, spot.top, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                return result;
+            }
+            WM_WINDOWPOSCHANGING => {
+                let pos = &mut *(lparam as *mut WINDOWPOS);
+                if let Some(spot) = guard.placing {
+                    if pos.flags & SWP_NOSIZE == 0 && IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 {
+                        pos.cx = spot.right - spot.left;
+                        pos.cy = spot.bottom - spot.top;
+                        if pos.flags & SWP_NOMOVE == 0 {
+                            pos.x = spot.left;
+                            pos.y = spot.top;
+                        }
+                    }
+                }
+            }
+            // The size to keep is the one the user gives the window, not one a change of
+            // scale or a drag between monitors passes through, nor a snapped one.
+            WM_SIZE => {
+                let settled = guard.placing.is_none() && (!guard.in_drag || guard.resizing);
+                if wparam as u32 == SIZE_RESTORED && settled && !is_snapped(hwnd) {
+                    guard.size = size_of(hwnd);
+                }
+            }
+            WM_ENTERSIZEMOVE => {
+                guard.in_drag = true;
+                guard.resizing = false;
+            }
+            WM_SIZING => guard.resizing = true,
+            WM_EXITSIZEMOVE => {
+                guard.in_drag = false;
+                guard.resizing = false;
+            }
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID);
+                drop(Box::from_raw(data as *mut Guard));
+                return DefSubclassProc(hwnd, msg, wparam, lparam);
+            }
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+}
+
 // ---- tray & icon --------------------------------------------------------
 
 fn build_tray() -> Option<Tray> {
@@ -1187,6 +1465,7 @@ fn subscription(_app: &App) -> Subscription<Message> {
         Subscription::run(menu_stream),
         Subscription::run(clip_stream),
         window::close_requests().map(Message::CloseRequested),
+        window::resize_events().map(|(id, size)| Message::WindowResized(id, size.width)),
         iced::event::listen_with(|event, _status, id| match event {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 match key.as_ref() {
@@ -1419,12 +1698,17 @@ fn main_view(app: &App) -> Element<'_, Message> {
     let body: Element<Message> = if app.manager.downloads.is_empty() {
         empty_state("Paste a link above to start a download.")
     } else if visible.is_empty() {
-        empty_state("Nothing in progress — completed downloads are hidden (View ▸ Show completed).")
+        empty_state("Nothing in progress — completed downloads are hidden (View > Show completed downloads).")
     } else {
         let mut list = column![].spacing(8);
         let deletes = app.settings.delete_file_on_remove;
         for d in visible {
-            list = list.push(download_item(app.selected == Some(d.id()), deletes, d));
+            list = list.push(download_item(
+                app.selected == Some(d.id()),
+                deletes,
+                app.main_width,
+                d,
+            ));
         }
         scrollable(list)
             .direction(scrollable::Direction::Vertical(
@@ -1468,21 +1752,39 @@ fn empty_state(message: &'static str) -> Element<'static, Message> {
 
 /// A slim row by default; the full card while downloading or when clicked.
 /// `deletes`: the Remove action also deletes the file (the button says so).
-fn download_item(selected: bool, deletes: bool, d: &Download) -> Element<'static, Message> {
+/// `width`: the window's, which decides how much of a long name fits.
+fn download_item(selected: bool, deletes: bool, width: f32, d: &Download) -> Element<'static, Message> {
     if selected || matches!(d.status(), Status::Running | Status::Probing) {
-        full_card(selected, deletes, d)
+        full_card(selected, deletes, width, d)
     } else {
-        compact_row(d)
+        compact_row(width, d)
     }
 }
 
-fn compact_row(d: &Download) -> Element<'static, Message> {
+/// Content cut off at one line's height. This iced wraps all plain text, whatever
+/// its `Wrapping` says (only its editor applies that), so a clip keeps it to a line.
+fn one_line<'a>(content: impl Into<Element<'a, Message>>, height: f32) -> Element<'a, Message> {
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fixed(height))
+        .clip(true)
+        .into()
+}
+
+/// A file name at this font size, shortened in the middle to fit about `room`
+/// pixels: its start says what it is, and its end what type.
+fn fitted_name(d: &Download, room: f32, size: f32) -> String {
+    middle_ellipsis(&d.filename(), (room / (size * 0.55)).max(12.0) as usize)
+}
+
+fn compact_row(width: f32, d: &Download) -> Element<'static, Message> {
     let id = d.id();
     let status = d.status();
     let size = |n: Option<u64>| n.map(|b| human_bytes(Some(b))).unwrap_or_default();
     let (detail, label, style): (String, &str, fn(&Theme) -> text::Style) = match status {
         Status::Complete => (size(d.size()), "Done", text_success),
         Status::Error => (size(d.size()), "Failed", text_danger),
+        Status::Paused if d.downloaded() == 0 => (size(d.size()), "Paused", text_muted),
         Status::Paused => (
             format!("{} / {}", human_bytes(Some(d.downloaded())), size(d.size())),
             "Paused",
@@ -1494,13 +1796,8 @@ fn compact_row(d: &Download) -> Element<'static, Message> {
 
     let r = row![
         status_dot(status),
-        container(
-            text(d.filename())
-                .size(14.0)
-                .wrapping(text::Wrapping::None)
-        )
-        .width(Length::Fill)
-        .clip(true),
+        // What's left of the window beside the dot, size and status.
+        one_line(text(fitted_name(d, width - 290.0, 14.0)).size(14.0), 19.0),
         text(detail).size(12.0).style(text_muted),
         container(text(label).size(12.0).style(style))
             .width(Length::Fixed(52.0))
@@ -1519,7 +1816,7 @@ fn compact_row(d: &Download) -> Element<'static, Message> {
     .into()
 }
 
-fn full_card(selected: bool, deletes: bool, d: &Download) -> Element<'static, Message> {
+fn full_card(selected: bool, deletes: bool, width: f32, d: &Download) -> Element<'static, Message> {
     let id = d.id();
     let status = d.status();
     let pct = d.progress();
@@ -1538,20 +1835,18 @@ fn full_card(selected: bool, deletes: bool, d: &Download) -> Element<'static, Me
     };
 
     let name_row = row![
-        container(
-            text(d.filename())
-                .size(15.0)
-                .wrapping(text::Wrapping::None)
-        )
-        .width(Length::Fill)
-        .clip(true),
+        // What's left of the window beside the percentage or status.
+        one_line(text(fitted_name(d, width - 140.0, 15.0)).size(15.0), 20.0),
         right,
     ]
     .spacing(12)
     .align_y(Alignment::Center);
 
+    // In file order: work split off a slow connection belongs next to where it came from.
+    let mut segments = d.segments_snapshot();
+    segments.sort_by_key(|s| s.start);
     let bar = canvas(SegmentBar {
-        segments: d.segments_snapshot(),
+        segments,
         size: d.size(),
         progress: pct,
         done: status == Status::Complete,
@@ -1561,14 +1856,7 @@ fn full_card(selected: bool, deletes: bool, d: &Download) -> Element<'static, Me
 
     // The details get whatever room the buttons leave, on one line, so a long
     // message can't squeeze the buttons.
-    let meta = container(
-        text(meta_label(d))
-            .size(12.0)
-            .style(text_muted)
-            .wrapping(text::Wrapping::None),
-    )
-    .width(Length::Fill)
-    .clip(true);
+    let meta = one_line(text(meta_label(d)).size(12.0).style(text_muted), 16.0);
     let mut meta_row = row![meta].spacing(4).align_y(Alignment::Center);
     if selected {
         match status {
@@ -1646,14 +1934,12 @@ fn popup_view(p: &Popup) -> Element<'_, Message> {
 
     // Always one line: a link wrapping onto a second line would push the
     // buttons out of the fixed-size window.
-    let link = container(
+    let link = one_line(
         text(middle_ellipsis(&readable_url(&p.url), 70))
             .size(12.0)
-            .style(text_muted)
-            .wrapping(text::Wrapping::None),
-    )
-    .width(Length::Fill)
-    .clip(true);
+            .style(text_muted),
+        16.0,
+    );
 
     container(column![header, link, name, actions].spacing(14))
     .padding(20)
@@ -1749,6 +2035,11 @@ fn ghost(label: &'static str, msg: Message) -> Element<'static, Message> {
 
 fn meta_label(d: &Download) -> String {
     match d.status() {
+        Status::Running if d.reconnecting() && d.speed() == 0 => format!(
+            "{} / {} · reconnecting…",
+            human_bytes(Some(d.downloaded())),
+            human_bytes(d.size())
+        ),
         Status::Running => {
             let base = format!(
                 "{} / {} · {}/s",
@@ -1762,6 +2053,13 @@ fn meta_label(d: &Download) -> String {
             }
         }
         Status::Complete => format!("{} · saved", human_bytes(d.size())),
+        Status::Paused if d.downloaded() == 0 => "Paused".to_string(),
+        // This server can't continue a download, so Resume starts it again.
+        Status::Paused if !d.supports_ranges() => format!(
+            "{} / {} · paused, resuming starts over",
+            human_bytes(Some(d.downloaded())),
+            human_bytes(d.size())
+        ),
         Status::Paused => format!(
             "{} / {} · paused",
             human_bytes(Some(d.downloaded())),

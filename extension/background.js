@@ -28,7 +28,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.downloads.onCreated.addListener(async (item) => {
   const { intercept = true } = await chrome.storage.local.get("intercept");
   if (!intercept) return;
-  const url = item.finalUrl || item.url;
+  // The link as clicked, not where it redirected: the target is often a signed
+  // link that expires and has a meaningless name (GitHub releases, for one).
+  const url = /^https?:\/\//i.test(item.url) ? item.url : item.finalUrl;
   if (!url || !/^https?:\/\//i.test(url)) return;
   chrome.downloads.cancel(item.id, () => {
     chrome.downloads.erase({ id: item.id }, () => void chrome.runtime.lastError);
