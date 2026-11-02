@@ -2,7 +2,58 @@
 
 ## Unreleased
 
+### Fixed
+- **Files from GitHub releases could save under a random name with no
+  extension.** Those links redirect to a signed link ending in a random id, and
+  SDM named the file after it. SDM now reads the real name from the link and the
+  server's answer, and the catch popup shows it before you confirm.
+- **Downloads could be silently corrupted and still show Done.** Two downloads
+  with the same name shared one temporary file. A server that stopped honoring
+  ranges partway, a partial file deleted or cut short during a pause, and a file
+  replaced on the server during a pause each left wrong bytes in the result. SDM
+  now gives each download its own name, checks every answer against what it asked
+  for, and starts over when what it has can't be trusted.
+- **A stalled connection or a dead network hung forever**, and Pause did nothing
+  until it ended. Silent connections are now replaced, the card says
+  "reconnecting…" meanwhile, and if the network doesn't come back the download
+  fails with a reason, ready to resume. A connection that dropped with no data
+  retried forever at full speed; that's bounded too. Pause now works at once,
+  whatever the connections are doing.
+- **Servers that allow only a few connections failed the whole download.** The
+  connections that work now finish it.
+- **Sites behind Cloudflare, SourceForge among them, refused downloads with a 403**
+  because SDM claimed to be a browser without shaking hands like one. After a 403,
+  SDM now tries once more under its own name.
+- **A paused download couldn't resume once its signed link expired.** SDM keeps
+  the link it was given and asks it for a fresh one.
+- **Browser cookies were sent to wherever a link redirected.** They now go only to
+  the link's own host.
+- **A crash lost all progress**, and unfinished downloads came back as Queued with
+  no way to start them. Progress is now saved every few seconds, and everything
+  unfinished can be resumed.
+- **A finished file you'd moved or deleted turned its row into a stuck Queued
+  job.** It stays Done.
+- **Failed downloads came back as Paused after a restart.** They stay Failed, and
+  keep their reason. Refused downloads no longer leave a stray `.sdm` file behind.
+- **A very long file name wrapped onto several lines** and pushed the card's
+  buttons out of reach. Names now stay on one line, shortened in the middle so
+  their type stays visible.
+- **File names too long for the filesystem** failed, and Windows device names
+  (`CON`, `NUL`…) could too. Both now save.
+- **Two SDMs could run at once** when two links were caught with SDM closed, each
+  overwriting the other's list.
+- **Clearer messages** for a full disk, a file too big for the drive, a download
+  folder that can't be used, and links SDM can't fetch (no more "builder error").
+- **`sdm`'s "Re-run to resume" is now true:** the CLI picks up where it stopped.
+- **Dragging the window between monitors with different scaling could make it
+  huge (bigger than the screen) or tiny, and it stayed that way.** Near the edge
+  between the monitors the scale flipped back and forth, and Windows' drag loop
+  rescaled the window's size on every flip. SDM now tells Windows the size it wants
+  at each scale and goes where Windows puts it, so the window keeps its size.
+
 ### Changed
+- **The extension hands over the link you clicked**, not the signed link it
+  redirected to, so names and later resumes work from the start.
 - **The installer asks before connecting the browser extension.** Registering
   the native-messaging host the Chrome/Edge extension needs is now a
   setup option (on by default) instead of happening silently.

@@ -115,16 +115,20 @@ Microsoft says that takes weeks and hundreds of installs.
    honors ranges, and the filename.
 2. **Plan** — split `[0, size)` into contiguous byte-range segments.
 3. **Fetch** — parallel connections (async, on tokio), each writing its range at
-   the right file offset.
-4. **Work-steal** — an idle connection splits the segment with the most bytes
+   the right file offset, and checking that each answer is the range it asked for
+   of the file it started on.
+4. **Recover** — a dropped or silent connection reconnects from where it stopped;
+   several attempts in a row with no bytes retire that connection, and the others
+   carry on with its work.
+5. **Work-steal** — an idle connection splits the segment with the most bytes
    left and takes half.
-5. **Persist** — progress is checkpointed to a `.sdm` sidecar next to the
-   `.sdmdownload` working file; pause stops cleanly and resume continues where
-   each segment left off.
-6. **Finalize** — the finished file gets its real name.
+6. **Persist** — progress is checkpointed every few seconds to a `.sdm` sidecar
+   next to the `.sdmdownload` working file; pause stops at once and resume continues
+   where each segment left off, even after a crash.
+7. **Finalize** — the finished file gets its real name.
 
 If a server won't honor ranges or won't reveal the size, SDM falls back to a single
-stream.
+stream; resuming that starts it over, since the server can't continue it.
 
 ## Design notes
 
@@ -141,14 +145,20 @@ only on a token-guarded loopback socket.
 | `crates/sdm-core` | download engine (probe, segmentation, work-stealing, resume), queue persistence, loopback IPC, link and filename helpers |
 | `crates/sdm-gui` | the desktop app (iced): window, catch popup, tray, menus, clipboard catching; also the browser's native-messaging host |
 | `crates/sdm-cli` | headless CLI (`sdm`) |
+| `crates/sdm-testkit` | a local HTTP server that misbehaves on request, for testing (not shipped) |
+| `tests/gui` | end-to-end tests of the app on Windows, driving the real binary |
 | `extension/` | Chrome/Edge extension that catches clicked download links |
 | `SDM.iss` | Inno Setup installer script |
 
 ## Contributing
 
-Issues and pull requests are welcome. `cargo test --workspace` runs the tests for
-the engine (segment planning, work-stealing), removing downloads, the IPC wire
-format and the link helpers.
+Issues and pull requests are welcome. `cargo test --workspace` runs the tests:
+the engine against a local server that misbehaves on request (dropped and silent
+connections, refusals, wrong ranges, expiring links, files replaced mid-download),
+checking every result byte for byte, plus the queue, the IPC wire format and the
+link helpers. `tests\gui\run.ps1` drives the real app through every state, menu and
+failure and checks what's on screen. `sdm-faultserver` runs that server on its own,
+for trying the app against the same failures by hand.
 
 ## License
 
