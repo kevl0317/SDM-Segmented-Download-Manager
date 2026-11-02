@@ -7,6 +7,8 @@
 //! mechanism any client is entitled to use.
 
 mod engine;
+#[cfg(test)]
+mod fault_tests;
 pub mod ipc;
 mod manager;
 mod types;
@@ -15,7 +17,7 @@ mod util;
 pub use engine::{Download, Segment, STATE_SUFFIX, WORKING_SUFFIX};
 pub use ipc::CatchRequest;
 pub use manager::Manager;
-pub use types::{SdmError, Status};
+pub use types::Status;
 pub use util::{
     config_dir, default_download_dir, default_headers, extract_download_url, filename_from_url,
     human_bytes, human_time, parse_content_disposition, percent_decode, sanitize_filename,

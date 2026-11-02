@@ -1,12 +1,12 @@
 //! Download manager: owns a list of jobs and persists the queue to `~/.sdm`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::engine::Download;
 use crate::types::Status;
-use crate::util::{config_dir, default_download_dir};
+use crate::util::{config_dir, default_download_dir, filename_from_url};
 
 #[derive(Serialize, Deserialize)]
 struct QueueEntry {
@@ -18,6 +18,8 @@ struct QueueEntry {
     state_path: String,
     final_path: String,
     size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 pub struct Manager {
@@ -31,6 +33,16 @@ impl Manager {
         Manager {
             default_dir: default_dir.unwrap_or_else(default_download_dir),
             queue_path: config_dir().join("queue.json"),
+            downloads: Vec::new(),
+        }
+    }
+
+    /// A manager on a private folder: never the real profile's queue.
+    #[cfg(test)]
+    pub(crate) fn scratch(dir: &Path) -> Self {
+        Manager {
+            default_dir: dir.to_path_buf(),
+            queue_path: dir.join("queue.json"),
             downloads: Vec::new(),
         }
     }
@@ -101,6 +113,7 @@ impl Manager {
                 state_path: d.state_path().to_string_lossy().into_owned(),
                 final_path: d.output_path().to_string_lossy().into_owned(),
                 size: d.size(),
+                error: d.error(),
             })
             .collect();
         let tmp = {
@@ -122,46 +135,44 @@ impl Manager {
         };
         let entries: Vec<QueueEntry> = match serde_json::from_str(&text) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(_) => {
+                // The next save would overwrite it: keep what's there for a look.
+                let _ = std::fs::rename(&self.queue_path, self.queue_path.with_extension("json.bad"));
+                return;
+            }
         };
-        for e in entries {
-            let mut d: Option<Download> = None;
-            if !e.state_path.is_empty() && std::path::Path::new(&e.state_path).exists() {
-                d = Download::from_state(std::path::Path::new(&e.state_path)).ok();
-            }
-            if d.is_none()
-                && e.status == Status::Complete.as_str()
-                && !e.final_path.is_empty()
-                && std::path::Path::new(&e.final_path).exists()
-            {
-                let dl = Download::new(
-                    &e.url,
-                    e.dest_dir.as_str(),
-                    Some(&e.filename),
-                    e.connections,
-                    None,
-                );
-                let size = e
-                    .size
-                    .or_else(|| std::fs::metadata(&e.final_path).ok().map(|m| m.len()));
-                dl.restore_complete(size, PathBuf::from(&e.final_path));
-                d = Some(dl);
-            }
-            let dl = d.unwrap_or_else(|| {
-                // Nothing on disk to resume; keep it as a fresh queued job.
-                let dl = Download::new(
-                    &e.url,
-                    e.dest_dir.as_str(),
-                    Some(&e.filename),
-                    e.connections,
-                    None,
-                );
-                dl.restore_size(e.size);
-                dl
-            });
-            self.downloads.push(dl);
-        }
+        self.downloads.extend(entries.into_iter().map(restore));
     }
+}
+
+/// A queue entry back as a job, in a state the app can act on.
+fn restore(e: QueueEntry) -> Download {
+    let failed = e.status == Status::Error.as_str();
+    let fresh = |filename: Option<&str>| {
+        Download::new(&e.url, e.dest_dir.as_str(), filename, e.connections, None)
+    };
+    // A file moved or deleted since doesn't undo the download: the list is history.
+    if e.status == Status::Complete.as_str() {
+        let dl = fresh(Some(&e.filename));
+        let size = e.size.or_else(|| std::fs::metadata(&e.final_path).ok().map(|m| m.len()));
+        dl.restore_complete(size, PathBuf::from(&e.final_path));
+        return dl;
+    }
+    let resumable = (!e.state_path.is_empty())
+        .then(|| Download::from_state(Path::new(&e.state_path)).ok())
+        .flatten();
+    let dl = resumable.unwrap_or_else(|| {
+        // Nothing on disk to resume, so it starts over when resumed. A name that only
+        // came from the link leaves the server free to give the real one.
+        let derived = e.filename == filename_from_url(&e.url);
+        let dl = fresh((!derived).then_some(e.filename.as_str()));
+        dl.restore_unstarted(e.size);
+        dl
+    });
+    if failed {
+        dl.restore_failed(e.error.clone().unwrap_or_else(|| "Download failed".to_string()));
+    }
+    dl
 }
 
 #[cfg(test)]
@@ -174,11 +185,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sdm-remove-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut m = Manager {
-            default_dir: dir.clone(),
-            queue_path: dir.join("queue.json"),
-            downloads: Vec::new(),
-        };
+        let mut m = Manager::scratch(&dir);
         let mut finished = |name: &str| {
             let file = dir.join(name);
             std::fs::write(&file, b"data").unwrap();
