@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.0.3 — 2026-11-02
+
+### Fixed
+- **Installing over a running SDM froze Setup**: it asked Windows to close SDM,
+  SDM only hid in the tray, and Setup waited 30 seconds before closing it by force,
+  losing anything it hadn't saved. Setup now asks SDM to quit first; SDM saves its
+  downloads and exits, and the upgrade takes a couple of seconds.
+
 ## v2.0.2 — 2026-11-02
 
 ### Fixed
